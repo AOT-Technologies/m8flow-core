@@ -58,6 +58,7 @@ The following elements are supported:
 | Call activity | Resolves `calledElement` through the host-supplied tenant-aware resolver. The child runs in the parent snapshot and parent execution resumes on child completion. See the [resolver contract](api.md#initializeprocessinstancefromdefinitioncommand). |
 | Multi-instance activity | Sequential or parallel, once per item of the collection in `loopDataInputRef` (bound to `inputDataItem`) or `loopCardinality` times. Each iteration sees `loopCounter` (zero-based), `nrOfInstances`, `nrOfActiveInstances` and `nrOfCompletedInstances`; those names and the input and output items stay in the iteration. `loopDataOutputRef` collects each `outputDataItem` in input order, and a later activation starts a new collection. `completionCondition` is evaluated after each iteration and, in a parallel loop, cancels the iterations still running. |
 | Non-interrupting timer event subprocess | A `subProcess` with `triggeredByEvent="true"` and a timer start event with `isInterrupting="false"`. The scheduler fires it inside the running instance, and the main path keeps going. Needs SpiffWorkflow 3.2.0 or later. Human tasks inside it don't become work items yet. |
+| Error and escalation events | Error end events and escalation throw and end events, caught by boundary events or by event subprocesses with an error or escalation start event. The nearest matching catcher in the enclosing scopes handles the event; a catcher with no code catches any event of its type. An interrupting event subprocess cancels the rest of its scope; one with `isInterrupting="false"` runs beside the main path. An uncaught escalation is ignored, and an uncaught error end event ends its path. Errors raised by task code are caught only by error boundaries, as described for them above. |
 
 Signals need a host-run delivery loop for recipients outside the throwing
 instance. See [Publish and deliver BPMN signals](../how-to/publish-signals.md).
@@ -117,9 +118,9 @@ The following elements and behaviors aren't covered:
 
 - Message routing beyond the supported collaboration event pairs
 - Signal starts for collaboration participants
-- Event subprocesses, other than the documented timer and signal forms
-- Error boundary events for errors thrown by error end events, and escalation
-  boundary events
+- Event subprocesses, other than the documented timer, signal, error and
+  escalation forms
+- Error event subprocesses catching errors raised by task code
 - Non-interrupting boundary events other than signals
 - Compound Multiple/Parallel Multiple events and event-based gateways
 - Asynchronous service tasks that complete through a callback

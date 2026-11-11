@@ -140,19 +140,19 @@ covered too; see [BPMN support](bpmn-support.md#supported-elements).
 The following BPMN features aren't tested in the library:
 
 - **Event subprocesses**, triggered by events inside a running parent process,
-  often for cancellation or exception handling. Non-interrupting timer and
-  interrupting/non-interrupting signal event subprocesses are covered.
+  often for cancellation or exception handling. Non-interrupting timer,
+  interrupting/non-interrupting signal, and error and escalation event
+  subprocesses are covered; message and conditional ones aren't.
 - **Advanced compensation combinations.** Boundary handlers and scoped
   throws and end events are supported, as is Transaction cancellation.
   Compensation models that require event subprocesses, loops, multi-instance
   activities, call activities, nested Transactions inside a cancellable
   Transaction, or automatic compensation from BPMN errors are rejected. See
   [Run compensation handlers](../how-to/run-compensation.md).
-- **Error boundary events for modelled errors, and escalation boundary
-  events.** An error that task code raises, such as a script's
-  `raise BpmnError("INSUFFICIENT_FUNDS")` or a connector's coded failure, is
-  caught by a matching error boundary. An error thrown by an error end event
-  isn't routed yet, and error event subprocesses don't catch either kind.
+- **Errors raised by task code, in event subprocesses.** A script's
+  `raise BpmnError("INSUFFICIENT_FUNDS")` or a connector's coded failure is
+  caught only by a matching error boundary. Error event subprocesses catch
+  errors thrown by the model, such as by an error end event, but not these.
 - **Other non-interrupting events**, beyond the tested timer and signal forms.
 
 ## Operations and observability
