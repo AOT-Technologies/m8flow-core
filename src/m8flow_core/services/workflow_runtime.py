@@ -24,7 +24,7 @@ from SpiffWorkflow.bpmn.util import BpmnEvent
 from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from SpiffWorkflow.spiff.specs.event_definitions import MessageEventDefinition
 from SpiffWorkflow.util.task import TaskState
-from sqlalchemy import select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
@@ -46,6 +46,7 @@ from m8flow_core.models.process_instance import (
     ProcessInstanceStatus,
 )
 from m8flow_core.models.process_instance_event import (
+    ProcessInstanceEventModel,
     ProcessLifecycleEventType,
     TaskEventType,
 )
@@ -1901,17 +1902,42 @@ def _delete_dropped_predicted_task_models(
     example when an interrupting catcher cancels the rest of a scope. The sync
     only upserts, so a step predicted before the instance was saved kept a
     FUTURE row after it was dropped (M8F-665). Rows of steps that ran, waited,
-    failed or were cancelled are history and stay.
+    failed or were cancelled are history and stay, and so does any row a work
+    item or an event refers to. One query finds the rows; nothing is lazy-loaded.
     """
-    for task_model in session.scalars(
-        select(TaskModel).where(
-            TaskModel.m8f_tenant_id == process_instance.m8f_tenant_id,
+    tenant_id = process_instance.m8f_tenant_id
+    candidates = session.scalars(
+        select(TaskModel.guid).where(
+            TaskModel.m8f_tenant_id == tenant_id,
             TaskModel.process_instance_id == process_instance.id,
             TaskModel.state.in_(_PREDICTED_TASK_STATES),
+            ~exists().where(
+                WorkItemModel.m8f_tenant_id == tenant_id,
+                WorkItemModel.task_guid == TaskModel.guid,
+            ),
+            ~exists().where(
+                ProcessInstanceEventModel.m8f_tenant_id == tenant_id,
+                ProcessInstanceEventModel.task_guid == TaskModel.guid,
+            ),
         )
-    ).all():
-        if task_model.guid not in kept_guids and not task_model.work_items:
-            session.delete(task_model)
+    ).all()
+    dropped = [guid for guid in candidates if guid not in kept_guids]
+    if not dropped:
+        return
+    # future_task's ON DELETE CASCADE is not enforced on SQLite without the
+    # foreign_keys pragma, so its rows are deleted explicitly first.
+    session.execute(
+        delete(FutureTaskModel).where(
+            FutureTaskModel.m8f_tenant_id == tenant_id,
+            FutureTaskModel.guid.in_(dropped),
+        )
+    )
+    session.execute(
+        delete(TaskModel).where(
+            TaskModel.m8f_tenant_id == tenant_id,
+            TaskModel.guid.in_(dropped),
+        )
+    )
 
 
 def _iter_serialized_task_rows(
