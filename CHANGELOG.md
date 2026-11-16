@@ -40,6 +40,9 @@ and what each version part means.
 - Connector proxy calls and the Keycloak provisioning helper no longer follow
   an HTTP redirect to a non-http(s) URL such as `ftp://`. They also no longer
   carry handlers for `ftp:`, `file:`, or `data:` URLs.
+- A malformed connector proxy or Keycloak URL such as `http://[::1` now raises
+  `ValidationError` or `KeycloakProvisioningError` instead of a bare
+  `ValueError`.
 
 ## [1.0.0] - 2026-11-12
 

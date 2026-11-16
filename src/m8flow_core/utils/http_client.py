@@ -34,8 +34,14 @@ ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 
 
 def is_http_url(url: str) -> bool:
-    """Return whether ``url`` is an absolute http or https URL."""
-    parts = urlsplit(url)
+    """Return whether ``url`` is an absolute http or https URL.
+
+    A URL that ``urlsplit`` cannot parse, such as ``http://[::1``, is not one.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
     return parts.scheme.lower() in ALLOWED_URL_SCHEMES and bool(parts.netloc)
 
 

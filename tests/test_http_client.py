@@ -16,7 +16,11 @@ from urllib.request import Request
 import pytest
 
 from m8flow_core import api
-from m8flow_core.utils.http_client import DisallowedRedirectError, open_http_url
+from m8flow_core.utils.http_client import (
+    DisallowedRedirectError,
+    is_http_url,
+    open_http_url,
+)
 from m8flow_core.utils.keycloak import service as keycloak_service
 
 
@@ -89,3 +93,27 @@ def test_keycloak_request_refuses_redirect_to_ftp() -> None:
             keycloak_service.KeycloakProvisioningError, match="non-http"
         ):
             keycloak_service._request("GET", f"{base_url}/realms")
+
+
+MALFORMED_URLS = ["http://[::1", "https://[::1/path", "http://]example.com"]
+
+
+@pytest.mark.parametrize("url", MALFORMED_URLS)
+def test_is_http_url_rejects_unparseable_url(url: str) -> None:
+    assert is_http_url(url) is False
+
+
+@pytest.mark.parametrize("url", MALFORMED_URLS)
+def test_connector_proxy_reports_malformed_url_as_validation_error(url: str) -> None:
+    with pytest.raises(api.ValidationError, match="absolute http or https"):
+        api.build_connector_proxy_service_task_registry(url)
+
+
+@pytest.mark.parametrize("url", MALFORMED_URLS)
+def test_keycloak_request_reports_malformed_url_as_provisioning_error(
+    url: str,
+) -> None:
+    with pytest.raises(
+        keycloak_service.KeycloakProvisioningError, match="absolute http or https"
+    ):
+        keycloak_service._request("GET", url)
