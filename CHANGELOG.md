@@ -54,8 +54,14 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
   migration branches without changing either history.
 - Alembic revision `m8f_instance_definition_tenant` prevents instances from
   referencing a BPMN definition owned by another tenant.
+- Alembic revision `m8f_instance_process_tenant` prevents instances from
+  referencing a BPMN process owned by another tenant.
 
 ### Changed
+
+- SQLite engines created with `m8flow_core.db.build_engine()` enforce foreign
+  keys on every connection. Process instance creation reports missing and
+  out-of-tenant BPMN references as `NotFoundError`.
 
 - Imports now reject BPMN collaborations with multiple pools but fewer than
   two distinct executable participant processes.

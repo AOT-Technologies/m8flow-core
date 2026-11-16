@@ -6,9 +6,9 @@ Alembic baseline plus additive revisions. The baseline, `k2l3m4n5o6p7`, has
 no parent and builds the 1.0 schema on an empty database. The signal revision
 `l3m4n5o6p7q8` and compensation revision `m8f_671_compensation` form one
 branch. The merge revision `m8f_merge_runtime` joins it with the collaboration
-revision `m8f_collaboration_01`. The current head,
-`m8f_instance_definition_tenant`, enforces tenant ownership of an instance's
-definition. See
+revision `m8f_collaboration_01`. The following revisions,
+`m8f_instance_definition_tenant` and `m8f_instance_process_tenant`, enforce
+tenant ownership of an instance's definition and BPMN process. See
 [Upgrade to 1.0](../how-to/upgrade-to-1.0.md) for existing databases.
 
 Table and column names are part of the compatibility contract, because host
@@ -62,11 +62,13 @@ The `m8f_collaboration_01` migration adds the nullable, 255-character
 `process_instance.collaboration_correlation_key` and an index over tenant,
 definition, BPMN version, and key. Existing instances have a null key.
 
-When an instance has a BPMN definition, its
-`(m8f_tenant_id, bpmn_process_definition_id)` must match
-`(m8f_tenant_id, id)` on the definition. The definition ID may still be null.
-The migration stops if an existing reference violates this rule. Correct the
-reported reference before retrying; the migration does not change the data.
+## Process instance references
+
+The nullable `bpmn_process_definition_id` and `bpmn_process_id` each form a
+composite foreign key with `m8f_tenant_id`. Each key matches
+`(m8f_tenant_id, id)` on its parent table, which has a unique index on those
+columns. If either migration finds an invalid reference, correct the reported
+instance's reference before retrying.
 
 ## Signal registry
 

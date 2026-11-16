@@ -114,15 +114,16 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-The second command should report `m8f_instance_definition_tenant` as the head.
+The second command should report `m8f_instance_process_tenant` as the head.
 
 ### Upgrade a database that already uses 1.0 migrations
 
 Run `alembic upgrade head` from the baseline or from an existing
 collaboration, signal, or compensation revision. Alembic applies any missing
 revisions, joins the two migration branches at `m8f_merge_runtime`, and
-enforces same-tenant instance-to-definition references.
-No stamp is needed.
+enforces same-tenant references from instances to their BPMN definitions
+and processes. If the migration reports an invalid instance reference,
+correct it before rerunning `alembic upgrade head`. No stamp is needed.
 
 The revision ID alone doesn't prove the tables match the 1.0 models. A
 database built before the baseline can still differ in details such as extra

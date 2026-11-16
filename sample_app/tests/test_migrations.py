@@ -6,7 +6,7 @@ import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from m8flow_sample_app.db import build_alembic_config, run_migrations
+from m8flow_sample_app.db import build_alembic_config, build_engine, run_migrations
 from m8flow_sample_app.models import SecretModel
 from m8flow_sample_app.settings import get_settings
 from sqlalchemy import create_engine, inspect, text
@@ -29,6 +29,9 @@ COMPENSATION_TABLES = {"compensation_scope", "compensation_run", "compensation_r
 COLLABORATION_REVISION = "20261112_0005"
 COLLABORATION_INDEX = "ix_process_instance_collaboration_lookup"
 COLLABORATION_FK = "fk_process_instance_definition_tenant"
+HEAD_REVISION = "20261116_0006"
+PROCESS_TENANT_INDEX = "m8f_bpmn_process_tenant_id_key"
+PROCESS_TENANT_FK = "fk_process_instance_process_tenant"
 PARENT_INDEXES = {
     "process_instance": "m8f_process_instance_tenant_id_key",
     "bpmn_process_definition": "m8f_definition_tenant_id_key",
@@ -138,6 +141,42 @@ def test_upgrade_existing_sample_app_adds_collaboration_schema(migration_databas
     )
 
 
+def test_upgrade_adds_bpmn_process_tenant_constraint(migration_database):
+    engine, config = migration_database
+    command.upgrade(config, "head")
+    command.downgrade(config, COLLABORATION_REVISION)
+    inspector = inspect(engine)
+    assert PROCESS_TENANT_INDEX not in {
+        index["name"] for index in inspector.get_indexes("bpmn_process")
+    }
+    assert PROCESS_TENANT_FK not in {
+        key["name"] for key in inspector.get_foreign_keys("process_instance")
+    }
+
+    command.upgrade(config, "head")
+    inspector = inspect(engine)
+    assert any(
+        index["name"] == PROCESS_TENANT_INDEX
+        and index["unique"]
+        and index["column_names"] == ["m8f_tenant_id", "id"]
+        for index in inspector.get_indexes("bpmn_process")
+    )
+    assert any(
+        key["name"] == PROCESS_TENANT_FK
+        and key["constrained_columns"] == ["m8f_tenant_id", "bpmn_process_id"]
+        and key["referred_table"] == "bpmn_process"
+        and key["referred_columns"] == ["m8f_tenant_id", "id"]
+        for key in inspector.get_foreign_keys("process_instance")
+    )
+
+    runtime_engine = build_engine(str(engine.url))
+    try:
+        with runtime_engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+    finally:
+        runtime_engine.dispose()
+
+
 def test_upgrade_from_previous_head_adds_indexes_and_preserves_data(migration_database):
     from datetime import UTC, datetime
 
@@ -184,7 +223,7 @@ def test_upgrade_from_previous_head_adds_indexes_and_preserves_data(migration_da
             connection.scalar(
                 text("SELECT version_num FROM m8flow_sample_app_alembic_version")
             )
-            == COLLABORATION_REVISION
+            == HEAD_REVISION
         )
 
 
@@ -320,7 +359,7 @@ def test_migrations_reuse_existing_secret_table_and_foreign_alembic_state(
             connection.execute(
                 text("select version_num from m8flow_sample_app_alembic_version")
             ).scalar()
-            == COLLABORATION_REVISION
+            == HEAD_REVISION
         )
         assert (
             connection.execute(text("select version_num from alembic_version")).scalar()

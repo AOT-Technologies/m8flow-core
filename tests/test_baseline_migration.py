@@ -14,16 +14,20 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy.orm import Session
 
+from m8flow_core.db import build_engine
 from m8flow_core.models import (
     Base,
     BpmnProcessDefinitionModel,
+    BpmnProcessModel,
     CompensationRecordModel,
     CompensationRunModel,
     CompensationScopeModel,
+    JsonDataModel,
     M8flowTenantModel,
     ProcessInstanceModel,
     SignalPublicationModel,
 )
+from m8flow_core.models.process_instance import WORKFLOW_STATE_JSON_DATA_KEY
 from m8flow_core.models.user import UserModel
 from m8flow_core.settings import get_settings
 
@@ -32,7 +36,8 @@ COLLABORATION_REVISION = "m8f_collaboration_01"
 SIGNAL_REVISION = "l3m4n5o6p7q8"
 COMPENSATION_REVISION = "m8f_671_compensation"
 MERGE_REVISION = "m8f_merge_runtime"
-HEAD_REVISION = "m8f_instance_definition_tenant"
+DEFINITION_TENANT_REVISION = "m8f_instance_definition_tenant"
+HEAD_REVISION = "m8f_instance_process_tenant"
 
 POSTGRES_URL = os.getenv("M8FLOW_POSTGRES_UPGRADE_DATABASE_URL", "")
 
@@ -115,7 +120,8 @@ def test_runtime_migrations_have_one_head_after_the_immutable_baseline() -> None
     revisions = list(script.walk_revisions())
 
     assert {revision.revision: revision.down_revision for revision in revisions} == {
-        HEAD_REVISION: MERGE_REVISION,
+        HEAD_REVISION: DEFINITION_TENANT_REVISION,
+        DEFINITION_TENANT_REVISION: MERGE_REVISION,
         MERGE_REVISION: (COLLABORATION_REVISION, COMPENSATION_REVISION),
         COLLABORATION_REVISION: BASELINE_REVISION,
         COMPENSATION_REVISION: SIGNAL_REVISION,
@@ -144,7 +150,13 @@ _DATABASES = [
 @pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
 @pytest.mark.parametrize(
     "existing_revision",
-    (BASELINE_REVISION, COLLABORATION_REVISION, COMPENSATION_REVISION, MERGE_REVISION),
+    (
+        BASELINE_REVISION,
+        COLLABORATION_REVISION,
+        COMPENSATION_REVISION,
+        MERGE_REVISION,
+        DEFINITION_TENANT_REVISION,
+    ),
 )
 def test_upgrade_from_existing_revision_matches_models_and_downgrade_removes_tables(
     migration_database: str,
@@ -244,7 +256,7 @@ def test_upgrade_from_signal_preserves_data_and_enforces_journal_tenant(
 ) -> None:
     config = _alembic_config()
     command.upgrade(config, SIGNAL_REVISION)
-    engine = sa.create_engine(migration_database)
+    engine = build_engine(migration_database)
     tenant = M8flowTenantModel.__table__
     instance = ProcessInstanceModel.__table__
     publication = SignalPublicationModel.__table__
@@ -275,12 +287,6 @@ def test_upgrade_from_signal_preserves_data_and_enforces_journal_tenant(
             },
         ),
     )
-    if engine.dialect.name == "sqlite":
-
-        @sa.event.listens_for(engine, "connect")
-        def enable_foreign_keys(dbapi_connection, _record) -> None:
-            dbapi_connection.execute("PRAGMA foreign_keys=ON")
-
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -348,21 +354,28 @@ def test_upgrade_from_signal_preserves_data_and_enforces_journal_tenant(
 
 
 @pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
-def test_instance_definition_constraint_rejects_cross_tenant_references(
+@pytest.mark.parametrize(
+    ("model", "relationship", "previous_revision"),
+    [
+        (BpmnProcessDefinitionModel, "bpmn_process_definition", MERGE_REVISION),
+        (BpmnProcessModel, "bpmn_process", DEFINITION_TENANT_REVISION),
+    ],
+)
+def test_instance_constraints_reject_cross_tenant_references(
     migration_database: str,
+    model: type[BpmnProcessDefinitionModel] | type[BpmnProcessModel],
+    relationship: str,
+    previous_revision: str,
 ) -> None:
     config = _alembic_config()
-    command.upgrade(config, MERGE_REVISION)
-    engine = sa.create_engine(migration_database)
-    if engine.dialect.name == "sqlite":
-
-        @sa.event.listens_for(engine, "connect")
-        def enable_foreign_keys(dbapi_connection, _record) -> None:
-            dbapi_connection.execute("PRAGMA foreign_keys=ON")
+    command.upgrade(config, previous_revision)
+    engine = build_engine(migration_database)
 
     tenant = M8flowTenantModel.__table__
     definition = BpmnProcessDefinitionModel.__table__
+    process = BpmnProcessModel.__table__
     instance = ProcessInstanceModel.__table__
+    reference = instance.c[f"{relationship}_id"]
     try:
         with engine.begin() as connection:
             connection.execute(
@@ -385,21 +398,47 @@ def test_instance_definition_constraint_rejects_cross_tenant_references(
                 )
                 .returning(definition.c.id)
             )
+            if model is BpmnProcessModel:
+                connection.execute(
+                    JsonDataModel.__table__.insert().values(
+                        m8f_tenant_id="one",
+                        hash="order-state",
+                        data={WORKFLOW_STATE_JSON_DATA_KEY: "order-state"},
+                    )
+                )
+                target_id = connection.scalar(
+                    process.insert()
+                    .values(
+                        m8f_tenant_id="one",
+                        bpmn_process_definition_id=definition_id,
+                        properties_json={},
+                        json_data_hash="order-state",
+                    )
+                    .returning(process.c.id)
+                )
+            else:
+                target_id = definition_id
             insert = instance.insert().values(
                 process_model_identifier="order",
                 process_model_display_name="Order",
                 process_initiator_id=user_id,
             )
             valid_id = connection.scalar(
-                insert.values(
-                    m8f_tenant_id="one", bpmn_process_definition_id=definition_id
-                ).returning(instance.c.id)
+                insert.values({instance.c.m8f_tenant_id: "one", reference: target_id})
+                .returning(instance.c.id)
             )
             invalid_id = connection.scalar(
-                insert.values(
-                    m8f_tenant_id="two", bpmn_process_definition_id=definition_id
-                ).returning(instance.c.id)
+                insert.values({instance.c.m8f_tenant_id: "two", reference: target_id})
+                .returning(instance.c.id)
             )
+
+        if model is BpmnProcessModel:
+            with Session(engine) as session:
+                valid = session.get_one(ProcessInstanceModel, valid_id)
+                assert valid.workflow_state_json == "order-state"
+                invalid = session.get_one(ProcessInstanceModel, invalid_id)
+                assert invalid.bpmn_process is None
+                assert invalid.workflow_state_json is None
 
         with pytest.raises(
             RuntimeError, match=rf"Process instance {invalid_id} .*tenant"
@@ -408,25 +447,20 @@ def test_instance_definition_constraint_rejects_cross_tenant_references(
 
         with engine.begin() as connection:
             assert connection.scalar(
-                sa.select(instance.c.bpmn_process_definition_id).where(
-                    instance.c.id == invalid_id
-                )
-            ) == definition_id
+                sa.select(reference).where(instance.c.id == invalid_id)
+            ) == target_id
             connection.execute(
-                instance.update().where(instance.c.id == invalid_id).values(
-                    bpmn_process_definition_id=None
-                )
+                instance.update().where(instance.c.id == invalid_id)
+                .values({reference: None})
             )
 
         command.upgrade(config, "head")
         with engine.begin() as connection:
-            assert dict(connection.execute(
-                sa.select(instance.c.id, instance.c.bpmn_process_definition_id)
-            ).all()) == {valid_id: definition_id, invalid_id: None}
+            assert dict(
+                connection.execute(sa.select(instance.c.id, reference)).all()
+            ) == {valid_id: target_id, invalid_id: None}
             connection.execute(
-                insert.values(
-                    m8f_tenant_id="one", bpmn_process_definition_id=definition_id
-                )
+                insert.values({instance.c.m8f_tenant_id: "one", reference: target_id})
             )
             connection.execute(insert.values(m8f_tenant_id="two"))
             with (
@@ -435,7 +469,7 @@ def test_instance_definition_constraint_rejects_cross_tenant_references(
             ):
                 connection.execute(
                     insert.values(
-                        m8f_tenant_id="two", bpmn_process_definition_id=definition_id
+                        {instance.c.m8f_tenant_id: "two", reference: target_id}
                     )
                 )
             with (
@@ -443,35 +477,28 @@ def test_instance_definition_constraint_rejects_cross_tenant_references(
                 connection.begin_nested(),
             ):
                 connection.execute(
-                    instance.update().where(instance.c.id == valid_id).values(
-                        m8f_tenant_id="two"
-                    )
+                    instance.update().where(instance.c.id == invalid_id)
+                    .values({reference: target_id})
                 )
 
         with Session(engine) as session:
-            unlinked = session.get(ProcessInstanceModel, invalid_id)
-            unlinked.bpmn_process_definition = session.get(
-                BpmnProcessDefinitionModel, definition_id
-            )
+            unlinked = session.get_one(ProcessInstanceModel, invalid_id)
+            setattr(unlinked, relationship, session.get_one(model, target_id))
             with pytest.raises(sa.exc.IntegrityError, match=r"(?i)foreign key"):
                 session.flush()
             session.rollback()
             assert unlinked.m8f_tenant_id == "two"
 
-        command.downgrade(config, MERGE_REVISION)
+        command.downgrade(config, previous_revision)
         with engine.begin() as connection:
             assert connection.scalar(
-                sa.select(instance.c.bpmn_process_definition_id).where(
-                    instance.c.id == valid_id
-                )
-            ) == definition_id
+                sa.select(reference).where(instance.c.id == valid_id)
+            ) == target_id
             assert connection.scalar(
                 sa.select(sa.func.count()).select_from(instance)
             ) == 4
             connection.execute(
-                insert.values(
-                    m8f_tenant_id="two", bpmn_process_definition_id=definition_id
-                )
+                insert.values({instance.c.m8f_tenant_id: "two", reference: target_id})
             )
     finally:
         engine.dispose()

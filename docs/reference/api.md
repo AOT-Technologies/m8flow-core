@@ -341,7 +341,8 @@ Returns `ProcessInstanceModel`.
 
 Raises:
 
-- `NotFoundError` if the initiator doesn't exist.
+- `NotFoundError` if the initiator doesn't exist or the BPMN definition or
+  process cannot be found in the requested tenant.
 - `AuthorizationError` if the initiator isn't in the tenant.
 
 ### `ClaimTaskCommand`

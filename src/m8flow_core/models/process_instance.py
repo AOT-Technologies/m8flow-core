@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, ForeignKeyConstraint, Index, String
+from sqlalchemy import DateTime, ForeignKey, ForeignKeyConstraint, Index, String, and_
 from sqlalchemy.orm import (
     Mapped,
     mapped_column,
@@ -14,6 +14,7 @@ from sqlalchemy.orm import (
 )
 
 from m8flow_core.models.base import Base
+from m8flow_core.models.bpmn_process import BpmnProcessModel
 from m8flow_core.models.json_data import JsonDataModel
 from m8flow_core.models.tenant_scoped import M8fTenantScopedMixin, TenantScoped
 
@@ -51,6 +52,11 @@ _ACTIVE_STATUSES: tuple[str, ...] = (
 class ProcessInstanceModel(M8fTenantScopedMixin, TenantScoped, Base):
     __tablename__ = "process_instance"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ("m8f_tenant_id", "bpmn_process_id"),
+            ("bpmn_process.m8f_tenant_id", "bpmn_process.id"),
+            name="fk_process_instance_process_tenant",
+        ),
         ForeignKeyConstraint(
             ("m8f_tenant_id", "bpmn_process_definition_id"),
             ("bpmn_process_definition.m8f_tenant_id", "bpmn_process_definition.id"),
@@ -120,7 +126,14 @@ class ProcessInstanceModel(M8fTenantScopedMixin, TenantScoped, Base):
     bpmn_process_definition = relationship(
         "BpmnProcessDefinitionModel", foreign_keys=[bpmn_process_definition_id]
     )
-    bpmn_process = relationship("BpmnProcessModel")
+    bpmn_process = relationship(
+        BpmnProcessModel,
+        primaryjoin=lambda: and_(
+            ProcessInstanceModel.bpmn_process_id == BpmnProcessModel.id,
+            ProcessInstanceModel.m8f_tenant_id == BpmnProcessModel.m8f_tenant_id,
+        ),
+        foreign_keys=[bpmn_process_id],
+    )
     tasks = relationship(
         "TaskModel", back_populates="process_instance", cascade="all, delete-orphan"
     )
@@ -168,15 +181,16 @@ class ProcessInstanceModel(M8fTenantScopedMixin, TenantScoped, Base):
 
     @property
     def workflow_state_json(self) -> str | None:
-        if self.bpmn_process is None:
+        process = self.bpmn_process
+        if process is None or process.m8f_tenant_id != self.m8f_tenant_id:
             return None
         session = object_session(self)
         if session is None:
             return None
         json_data = JsonDataModel.get_for_tenant(
             session,
-            self.bpmn_process.m8f_tenant_id,
-            self.bpmn_process.json_data_hash,
+            self.m8f_tenant_id,
+            process.json_data_hash,
         )
         if json_data is None:
             return None

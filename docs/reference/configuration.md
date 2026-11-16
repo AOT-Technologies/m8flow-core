@@ -18,6 +18,10 @@ directory, through `m8flow_core.settings`:
 | `M8FLOW_DATABASE_URL` | `sqlite+pysqlite:///./m8flow.db` | SQLAlchemy URL used by `build_engine()` and by `alembic upgrade` |
 | `M8FLOW_DATABASE_ECHO` | `false` | Logs every SQL statement when `true` |
 
+`m8flow_core.db.build_engine()` enables foreign-key enforcement on each
+SQLite connection. If you supply your own SQLite engine, configure it to
+enable `PRAGMA foreign_keys=ON` on every new connection.
+
 To use PostgreSQL or MySQL, install the `postgresql` or `mysql` extra and set
 a matching URL, such as
 `postgresql+psycopg://<user>:<password>@localhost:5432/<database>`.
