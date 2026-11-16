@@ -23,6 +23,7 @@ You need the following:
 - A trusted publisher on PyPI for this repository. It lets the workflow upload
   without a stored API token. Set it up once, as described in
   [Set up PyPI publishing](#set-up-pypi-publishing).
+- A tag signing key, as described in [Set up tag signing](#set-up-tag-signing).
 
 ## Choose a channel
 
@@ -66,8 +67,8 @@ To publish a release, follow these steps:
 4. Go to **Actions** > **Create release tag**, click **Run workflow**, enter
    the version, such as `1.0.1`, and click **Run workflow**. The workflow
    checks that `pyproject.toml` and `CHANGELOG.md` on `main` match the
-   version, then tags the tip of `main` with the bare version, with no `v`
-   prefix. m8flow refers to core versions by this tag.
+   version, then creates a GPG-signed tag on the tip of `main` with the bare
+   version, with no `v` prefix. m8flow refers to core versions by this tag.
 5. Go to **Actions** > **GitHub Release**, click **Run workflow**, enter the
    same version, and click **Run workflow**. The workflow creates a draft
    GitHub Release for the tag, with the version's changelog section as release
@@ -181,6 +182,23 @@ follow these steps:
 The first successful run creates the project on PyPI. After that, the
 publisher appears under the project's **Publishing** settings.
 
+## Set up tag signing
+
+GitHub shows a tag as **Verified** when its signing key belongs to a GitHub
+account with a verified email that matches the key. To set up the key once:
+
+1. Generate a key with no passphrase, using a verified email of the account
+   that will own release tags. The tagger name is the text before the email.
+
+   ```bash
+   gpg --quick-gen-key "m8flow-core release <EMAIL>" ed25519 sign 2y
+   ```
+
+2. Add the output of `gpg --armor --export EMAIL` to that account under
+   **Settings** > **SSH and GPG keys**.
+3. Add the output of `gpg --armor --export-secret-keys EMAIL` as the
+   repository secret `RELEASE_TAG_GPG_PRIVATE_KEY`.
+
 ## Signing and provenance
 
 Release artifacts are signed with [Sigstore](https://www.sigstore.dev/)
@@ -193,9 +211,9 @@ release carries the following:
 | GitHub build provenance for the wheel and sdist | `actions/attest-build-provenance` in the **Test and build** job | `gh attestation verify` |
 | SHA-256 checksums | The **Record checksums** step, uploaded as a workflow artifact | `sha256sum --check` |
 
-Release tags are annotated but not GPG-signed. Only the **Create release
-tag** workflow creates them, and the attestations above tie each artifact to
-the workflow run and commit it was built from.
+Release tags are GPG-signed by **Create release tag**; check one with
+`git tag -v <version>`. The attestations above tie each artifact to the
+workflow run and commit it was built from.
 
 To verify a downloaded wheel, run the following commands, replacing the
 version as needed:

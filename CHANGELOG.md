@@ -32,6 +32,8 @@ and what each version part means.
 
 - CI runs the Python 3.13 and 3.14, macOS, and Windows test matrix on pull
   requests as well as on `main`.
+- Release tags are GPG-signed. See
+  [Set up tag signing](docs/how-to/publish-a-release.md#set-up-tag-signing).
 - The Codecov upload runs in its own `main`-only job, so the job that runs
   pull request code no longer holds the `id-token: write` permission.
 
