@@ -117,19 +117,6 @@ ignore_missing_imports = true
 files = ["src/m8flow_core"]
 plugins = ["sqlalchemy.ext.mypy.plugin"]
 
-[[tool.mypy.overrides]]
-module = [
-  "m8flow_core.models.future_task",
-  "m8flow_core.models.json_data",
-  "m8flow_core.services.connector_proxy_service_tasks",
-  "m8flow_core.services.process_definitions",
-  "m8flow_core.services.scheduler_jobs",
-  "m8flow_core.services.scheduler_runtime",
-  "m8flow_core.services.workflow_runtime",
-  "m8flow_core.utils.keycloak.service",
-]
-ignore_errors = true
-
 [tool.bandit]
 exclude_dirs = [
   "tests",

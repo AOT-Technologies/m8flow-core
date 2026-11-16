@@ -298,9 +298,10 @@ def _parse_connector_proxy_response_body(raw_body: bytes) -> object | None:
 
     decoded = raw_body.decode("utf-8")
     try:
-        return json.loads(decoded)
+        parsed: object = json.loads(decoded)
     except json.JSONDecodeError:
         return decoded
+    return parsed
 
 
 def _raise_for_connector_proxy_error_payload(

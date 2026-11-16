@@ -426,15 +426,16 @@ def _reschedule_or_delete_timer_start_job(
         )
         return
 
+    next_run_at_in_seconds = next_timer_task_payload["run_at_in_seconds"]
+    if not isinstance(next_run_at_in_seconds, int | float):
+        raise ValidationError("Recurring timer start payload has no run_at_in_seconds")
     upsert_scheduler_job(
         session,
         tenant_id=job.m8f_tenant_id,
         job_key=job.job_key,
         job_type=SchedulerJobType.timer_start,
         bpmn_process_definition_id=job.bpmn_process_definition_id,
-        run_at=datetime.fromtimestamp(
-            float(next_timer_task_payload["run_at_in_seconds"]), UTC
-        ),
+        run_at=datetime.fromtimestamp(float(next_run_at_in_seconds), UTC),
         payload_json={
             "scheduled_from": "timer_start_runtime",
             "timer_task": next_timer_task_payload,

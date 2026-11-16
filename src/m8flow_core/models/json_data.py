@@ -44,7 +44,8 @@ class JsonDataModel(Base):
         if data is None:
             return {}
         normalized_json = json.dumps(dict(data), sort_keys=True, default=str)
-        return json.loads(normalized_json)
+        normalized: dict[str, Any] = json.loads(normalized_json)
+        return normalized
 
     @classmethod
     def hash_payload(

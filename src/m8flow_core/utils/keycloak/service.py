@@ -149,8 +149,10 @@ def ensure_shared_realm_organizations_and_users(
     for user_spec in users:
         normalized_username = user_spec.username.strip()
         normalized_email = user_spec.email.strip()
-        organization = organizations_by_alias.get(user_spec.organization_alias.strip())
-        if organization is None:
+        provisioned_organization = organizations_by_alias.get(
+            user_spec.organization_alias.strip()
+        )
+        if provisioned_organization is None:
             raise KeycloakProvisioningError(
                 "No provisioned Keycloak organization was available for alias "
                 f"'{user_spec.organization_alias}'."
@@ -197,13 +199,13 @@ def ensure_shared_realm_organizations_and_users(
             )
 
         add_organization_member(
-            organization.organization_id,
+            provisioned_organization.organization_id,
             user_id,
             admin_token=token,
         )
 
         organization_member = get_organization_member_by_username(
-            organization.organization_id,
+            provisioned_organization.organization_id,
             normalized_username,
             admin_token=token,
         )
@@ -214,14 +216,14 @@ def ensure_shared_realm_organizations_and_users(
                 "id",
                 message=(
                     "Keycloak organization member "
-                    f"'{normalized_username}' in '{organization.alias}' does "
-                    "not expose an id."
+                    f"'{normalized_username}' in "
+                    f"'{provisioned_organization.alias}' does not expose an id."
                 ),
             )
 
         for group_name in user_spec.organization_group_names:
             add_organization_group_member(
-                organization.organization_id,
+                provisioned_organization.organization_id,
                 group_name,
                 member_id,
                 admin_token=token,
@@ -231,8 +233,8 @@ def ensure_shared_realm_organizations_and_users(
             username=normalized_username,
             email=normalized_email,
             user_id=user_id,
-            organization_alias=organization.alias,
-            organization_id=organization.organization_id,
+            organization_alias=provisioned_organization.alias,
+            organization_id=provisioned_organization.organization_id,
             organization_group_names=user_spec.organization_group_names,
             created=created,
         )

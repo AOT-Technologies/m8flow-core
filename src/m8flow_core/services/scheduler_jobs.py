@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.orm import Session
 
 from m8flow_core.errors import ValidationError
@@ -129,14 +129,17 @@ def delete_scheduler_job(
     tenant_id: str,
     job_key: str,
 ) -> bool:
-    result = session.execute(
-        delete(SchedulerJobModel).where(
-            SchedulerJobModel.m8f_tenant_id == tenant_id,
-            SchedulerJobModel.job_key == job_key,
-        )
+    result = cast(
+        CursorResult[Any],
+        session.execute(
+            delete(SchedulerJobModel).where(
+                SchedulerJobModel.m8f_tenant_id == tenant_id,
+                SchedulerJobModel.job_key == job_key,
+            )
+        ),
     )
     session.flush()
-    return result.rowcount > 0
+    return bool(result.rowcount > 0)
 
 
 def _resolve_timestamp(timestamp: datetime | None) -> datetime:
