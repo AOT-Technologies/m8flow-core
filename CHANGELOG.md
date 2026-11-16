@@ -25,6 +25,8 @@ and what each version part means.
 - [Publish a release](docs/how-to/publish-a-release.md#withdraw-or-replace-a-release)
   now covers yanking a broken version from PyPI, marking it on GitHub and in
   the changelog, and replacing it with a patch release.
+- A [FAQ](docs/reference/faq.md) with short answers and links to the full
+  docs.
 - CI uploads test coverage from `main` to Codecov, and the README shows a
   coverage badge. The PyPI badge now reads the latest version from PyPI.
 

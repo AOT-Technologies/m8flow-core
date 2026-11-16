@@ -157,6 +157,7 @@ table:
 | Send signals between processes | [Publish and deliver BPMN signals](docs/how-to/publish-signals.md) |
 | Undo completed work | [Run compensation handlers](docs/how-to/run-compensation.md) |
 | Add my own authorization rules | [Customize authorization](docs/how-to/customize-authorization.md) |
+| Find a quick answer | [Frequently asked questions](docs/reference/faq.md) |
 | Fix an error or a stuck process | [Troubleshoot common problems](docs/how-to/troubleshoot.md) |
 | Upgrade from `m8flow-bpmn-core` 0.x | [Upgrade to 1.0](docs/how-to/upgrade-to-1.0.md) |
 | Look up a command, query, or error | [Public API reference](docs/reference/api.md) · [Database schema](docs/reference/database-schema.md) |
@@ -189,9 +190,8 @@ Use the following resources:
   [SECURITY.md](SECURITY.md). Don't open a public issue.
 - Before you open a pull request, read the [contributing guide](CONTRIBUTING.md).
 - Everyone who takes part follows the [code of conduct](CODE_OF_CONDUCT.md).
-- See the [roadmap](ROADMAP.md) for planned work, [GOVERNANCE.md](GOVERNANCE.md)
-  for how decisions are made, and [MAINTAINERS.md](MAINTAINERS.md) for who
-  maintains the project.
+- See [GOVERNANCE.md](GOVERNANCE.md) for how decisions are made, and
+  [MAINTAINERS.md](MAINTAINERS.md) for who maintains the project.
 - Release notes are in the [changelog](CHANGELOG.md).
 
 ## License

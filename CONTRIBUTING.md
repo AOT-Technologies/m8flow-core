@@ -17,8 +17,7 @@ for each commit. See [Sign off your commits](#sign-off-your-commits).
 
 Read the [code of conduct](CODE_OF_CONDUCT.md) before you take part.
 [GOVERNANCE.md](GOVERNANCE.md) explains how decisions are made, and
-[MAINTAINERS.md](MAINTAINERS.md) lists who reviews and merges changes. Check
-the [roadmap](ROADMAP.md) before you start on a large feature.
+[MAINTAINERS.md](MAINTAINERS.md) lists who reviews and merges changes.
 
 ## Prerequisites
 

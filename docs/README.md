@@ -64,6 +64,7 @@ Exact values to look up:
 - [Repository layout](reference/repository-layout.md)
 - [Limitations](reference/limitations.md)
 - [Performance baseline](reference/performance-baseline.md)
+- [Frequently asked questions](reference/faq.md)
 
 ### Explanation
 

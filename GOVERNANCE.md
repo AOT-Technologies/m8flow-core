@@ -22,7 +22,6 @@ become a contributor by following the [contributing guide](CONTRIBUTING.md).
 
 - review and merge pull requests
 - triage issues and set labels and milestones
-- keep the [roadmap](ROADMAP.md) current
 - publish releases, as described in
   [Publish a release](docs/how-to/publish-a-release.md)
 - enforce the [code of conduct](CODE_OF_CONDUCT.md)
