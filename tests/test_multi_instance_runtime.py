@@ -327,3 +327,125 @@ def test_saved_state_keeps_spiff_typenames(session: Session) -> None:
     state = instance.workflow_state_json or ""
     assert '"typename": "ParallelMultiInstanceTask"' in state
     assert "RuntimeParallelMultiInstanceTask" not in state
+
+
+def test_reentered_activity_with_new_keys_starts_a_new_mapping_output(
+    session: Session,
+) -> None:
+    # A mapping output reused across activations would keep the first run's keys.
+    body = (
+        '<bpmn:startEvent id="StartEvent_1"/>'
+        + _script("prep", "items = {'x': 1, 'y': 2}\nrounds = 0")
+        + _script("work", "res = it * 10", _loop(False))
+        + _script("count", "rounds = rounds + 1\nitems = {'z': 3}")
+        + '<bpmn:exclusiveGateway id="again" default="f_done"/>'
+        + _script("chk", "if out != {'z': 30}: raise Exception('out was ' + repr(out))")
+        + '<bpmn:endEvent id="EndEvent_1"/>'
+        '<bpmn:sequenceFlow id="f0" sourceRef="StartEvent_1" targetRef="prep"/>'
+        '<bpmn:sequenceFlow id="f1" sourceRef="prep" targetRef="work"/>'
+        '<bpmn:sequenceFlow id="f2" sourceRef="work" targetRef="count"/>'
+        '<bpmn:sequenceFlow id="f3" sourceRef="count" targetRef="again"/>'
+        '<bpmn:sequenceFlow id="f_loop" sourceRef="again" targetRef="work">'
+        "<bpmn:conditionExpression>rounds &lt; 2</bpmn:conditionExpression>"
+        "</bpmn:sequenceFlow>"
+        '<bpmn:sequenceFlow id="f_done" sourceRef="again" targetRef="chk"/>'
+        '<bpmn:sequenceFlow id="f4" sourceRef="chk" targetRef="EndEvent_1"/>'
+    )
+    assert _run(session, _DEFINITIONS.format(body=body)) == "complete"
+
+
+@pytest.mark.parametrize("sequential", [True, False], ids=["sequential", "parallel"])
+def test_loop_over_an_iterable_without_a_length(sequential: bool) -> None:
+    # Spiff accepts any iterable input. One without a length can't be saved in
+    # task data, so this runs the engine without persisting.
+    from m8flow_core.services.workflow_engine import _build_workflow
+
+    work = _script("work", "res = [it, loopCounter, nrOfInstances]", _loop(sequential))
+    workflow = _build_workflow(
+        bpmn_xml=_chain(_script("prep", "items = iter(['a', 'b', 'c'])"), work),
+        dmn_xml=None,
+        bpmn_process_id=None,
+    )
+    workflow.run_all(halt_on_manual=True)
+
+    assert workflow.completed
+    assert workflow.data["out"] == [["a", 0, 3], ["b", 1, 3], ["c", 2, 3]]
+
+
+def test_snapshot_saved_before_m8f640_resumes_mid_loop() -> None:
+    """A parallel review saved by the unpatched engine finishes on this one."""
+    from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
+    from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
+    from SpiffWorkflow.spiff.parser.process import SpiffBpmnParser
+    from SpiffWorkflow.spiff.serializer.config import SPIFF_CONFIG
+    from SpiffWorkflow.util.task import TaskState
+
+    from m8flow_core.services.workflow_engine import (
+        _WORKFLOW_STATE_SERIALIZER_VERSION,
+        _restore_workflow,
+    )
+
+    def finish(workflow: BpmnWorkflow, item: str) -> None:
+        (task,) = [
+            task
+            for task in workflow.get_tasks(state=TaskState.READY, manual=True)
+            if task.data["it"] == item
+        ]
+        task.data["res"] = item.upper()
+        task.run()
+        workflow.run_all(halt_on_manual=True)
+
+    review = '<bpmn:userTask id="review">' + _loop(False) + "</bpmn:userTask>"
+    parser = SpiffBpmnParser(validator=None)
+    parser.add_bpmn_str(_chain(_PREP, review).encode())
+    before = BpmnWorkflow(
+        parser.get_spec("Process_m8f640"),
+        parser.get_subprocess_specs("Process_m8f640"),
+    )
+    before.run_all(halt_on_manual=True)
+    finish(before, "c")
+    # What the engine wrote before M8F-640: Spiff's own classes and converters.
+    stock = BpmnWorkflowSerializer(
+        registry=BpmnWorkflowSerializer.configure(SPIFF_CONFIG),
+        version=_WORKFLOW_STATE_SERIALIZER_VERSION,
+    )
+
+    restored = _restore_workflow(stock.serialize_json(before))
+    for item in ("b", "a"):
+        finish(restored, item)
+
+    assert restored.completed
+    assert restored.data["out"] == ["A", "B", "C"]
+
+
+def test_parallel_subprocess_iterations_start_with_the_final_total(
+    session: Session,
+) -> None:
+    # Each iteration's subprocess copies its data when the child is created, so
+    # the total must be known before the first child exists.
+    loop = _loop(False).replace(
+        '<bpmn:outputDataItem id="res" name="res"/>',
+        '<bpmn:outputDataItem id="seen" name="seen"/>',
+    )
+    body = (
+        '<bpmn:startEvent id="StartEvent_1"/>'
+        + _script("prep", "items = ['a', 'b', 'c']")
+        + f'<bpmn:subProcess id="per_item">{loop}'
+        '<bpmn:startEvent id="item_start"/>'
+        + _script("record", "seen = [loopCounter, nrOfInstances]")
+        + '<bpmn:endEvent id="item_end"/>'
+        '<bpmn:sequenceFlow id="i0" sourceRef="item_start" targetRef="record"/>'
+        '<bpmn:sequenceFlow id="i1" sourceRef="record" targetRef="item_end"/>'
+        "</bpmn:subProcess>"
+        + _script(
+            "chk",
+            "if out != [[0, 3], [1, 3], [2, 3]]:"
+            " raise Exception('out was ' + repr(out))",
+        )
+        + '<bpmn:endEvent id="EndEvent_1"/>'
+        '<bpmn:sequenceFlow id="f0" sourceRef="StartEvent_1" targetRef="prep"/>'
+        '<bpmn:sequenceFlow id="f1" sourceRef="prep" targetRef="per_item"/>'
+        '<bpmn:sequenceFlow id="f2" sourceRef="per_item" targetRef="chk"/>'
+        '<bpmn:sequenceFlow id="f3" sourceRef="chk" targetRef="EndEvent_1"/>'
+    )
+    assert _run(session, _DEFINITIONS.format(body=body)) == "complete"

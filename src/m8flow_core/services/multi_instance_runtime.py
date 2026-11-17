@@ -8,7 +8,7 @@ activation of the same activity starts a new output collection.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -49,10 +49,7 @@ class _IterationScope(MultiInstanceTask):
                 self.raise_data_exception(
                     f"Multiinstance item {data_item.bpmn_id} already exists.", my_task
                 )
-        counters = {
-            "loopCounter": sum(1 for _ in self._instances(my_task)),
-            **self._counters(my_task),
-        }
+        loop_counter = sum(1 for _ in self._instances(my_task))
         child = my_task._add_child(task_spec, TaskState.WAITING)
         child.triggered = True
         if self.input_item is not None:
@@ -61,6 +58,7 @@ class _IterationScope(MultiInstanceTask):
             child.internal_data["key_or_index"] = key_or_index
         else:
             child.internal_data["item"] = item
+        counters = {"loopCounter": loop_counter, **self._counters(my_task)}
         child.data.update(counters)  # visible to an instance pre-script
         child.task_spec._update(child)
         child.data.update(counters)  # data inheritance overwrites them in nested loops
@@ -105,39 +103,47 @@ class _IterationScope(MultiInstanceTask):
                         if str(instance.id) in merged
                     ],
                 )
+        self._refresh_counters(my_task, child)
+
+    def init_data_output_with_input_data(self, my_task: Any, input_data: Any) -> None:
+        # Each activation starts a new output collection unless it updates its
+        # input in place, so a rework loop never sees the previous run's results.
+        if self.data_output.exists(my_task):
+            output = self.data_output.get(my_task)
+            if output is not input_data:
+                self.data_output.set(my_task, {} if isinstance(output, Mapping) else [])
+        super().init_data_output_with_input_data(my_task, input_data)
+
+    def init_data_output_with_cardinality(self, my_task: Any) -> None:
+        # Replaces Spiff 3.2.0's version, which raises NameError on an existing
+        # output. Each activation starts a new collection of the same kind.
+        output = self.data_output.get(my_task)
+        self.data_output.set(my_task, {} if isinstance(output, Mapping) else [])
+
+    def _refresh_counters(self, my_task: Any, *merged: Any) -> None:
         counters = self._counters(my_task)
-        child.data.update(counters)  # the completion condition reads this child
+        for child in merged:
+            child.data.update(counters)  # the completion condition reads this child
         for instance in self._instances(my_task):
             if not instance.has_state(TaskState.FINISHED_MASK):
                 instance.data.update(counters)
 
-    def init_data_output_with_input_data(self, my_task: Any, input_data: Any) -> None:
-        # A later activation (a rework loop) starts a new list instead of
-        # failing on the previous activation's results.
-        output = self.data_output.get(my_task)
-        if isinstance(output, list) and output is not input_data:
-            self.data_output.set(my_task, [])
-        super().init_data_output_with_input_data(my_task, input_data)
-
-    def init_data_output_with_cardinality(self, my_task: Any) -> None:
-        # Replaces Spiff 3.2.0's version, which raises NameError on an
-        # existing output collection.
-        if not isinstance(self.data_output.get(my_task), Mapping):
-            self.data_output.set(my_task, [])
-
     def _counters(self, my_task: Any) -> dict[str, int]:
-        if "m8f_total" not in my_task.internal_data:
-            if self.data_input is not None:
-                total = len(self.data_input.get(my_task))
-            else:
-                total = my_task.internal_data.get("cardinality")
-                if total is None:  # parallel loops don't keep it
-                    total = my_task.workflow.script_engine.evaluate(
-                        my_task, self.cardinality
-                    )
-            my_task.internal_data["m8f_total"] = total
-        total = my_task.internal_data["m8f_total"]
+        # Count the materialized iteration set, never the input, which can be
+        # any iterable: a parallel loop's recorded total, a sequential loop's
+        # cardinality, or its finished, running and not-yet-started iterations.
         completed = len(my_task.internal_data.get("merged", []))
+        total = my_task.internal_data.get(
+            "m8f_total", my_task.internal_data.get("cardinality")
+        )
+        if total is None:
+            running = sum(
+                1
+                for instance in self._instances(my_task)
+                if not instance.has_state(TaskState.FINISHED_MASK)
+            )
+            not_started = len(my_task.internal_data.get("remaining", []))
+            total = completed + running + not_started
         remaining = total - completed
         return {
             "nrOfInstances": total,
@@ -152,6 +158,36 @@ class RuntimeSequentialMultiInstanceTask(SequentialMultiInstanceTask, _Iteration
 
 class RuntimeParallelMultiInstanceTask(ParallelMultiInstanceTask, _IterationScope):
     sequential = False
+
+    def create_children(self, my_task: Any) -> None:
+        # SpiffWorkflow 3.2.0 ParallelMultiInstanceTask.create_children, with the
+        # iteration set materialized first: the input can be any iterable, and
+        # every child, including a subprocess that copies its data when it
+        # starts, must see the final total.
+        children: list[tuple[Any, Any]]
+        if self.data_input is not None:
+            data_input = self.data_input.get(my_task)
+            if isinstance(data_input, Mapping):
+                children = list(data_input.items())
+            elif isinstance(data_input, Sequence):
+                children = list(enumerate(data_input))
+            else:
+                children = [(None, item) for item in data_input]
+        else:
+            cardinality = my_task.workflow.script_engine.evaluate(
+                my_task, self.cardinality
+            )
+            children = [(index, index) for index in range(cardinality)]
+        my_task.internal_data["m8f_total"] = len(children)
+        if self.data_output is not None:
+            if self.data_input is not None:
+                self.init_data_output_with_input_data(
+                    my_task, self.data_input.get(my_task)
+                )
+            else:
+                self.init_data_output_with_cardinality(my_task)
+        for key_or_index, item in children:
+            self.create_child(my_task, item, key_or_index)
 
 
 _RUNTIME_CLASSES: dict[type, type] = {
