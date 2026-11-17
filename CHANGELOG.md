@@ -38,13 +38,16 @@ and what each version part means.
   [Set up tag signing](docs/how-to/publish-a-release.md#set-up-tag-signing).
 - The Codecov upload runs in its own `main`-only job, so the job that runs
   pull request code no longer holds the `id-token: write` permission.
+- The publish workflow attests build provenance in its own job, so the job
+  that runs the tests no longer holds the `id-token: write` permission.
 
 ### Security
 
 - Connector proxy calls and the Keycloak provisioning helper no longer follow
   an HTTP redirect to a non-http(s) URL such as `ftp://`. They also no longer
   carry handlers for `ftp:`, `file:`, or `data:` URLs.
-- A malformed connector proxy or Keycloak URL such as `http://[::1` now raises
+- A malformed connector proxy or Keycloak URL such as `http://[::1` or
+  `http://example.com:bad` now raises
   `ValidationError` or `KeycloakProvisioningError` instead of a bare
   `ValueError`.
 

@@ -208,7 +208,7 @@ release carries the following:
 | What | How it's produced | How to check it |
 |---|---|---|
 | PyPI attestations for the wheel and sdist | `pypa/gh-action-pypi-publish` with `attestations: true` | The **Provenance** section of the file on pypi.org, or `pypi-attestations verify pypi` |
-| GitHub build provenance for the wheel and sdist | `actions/attest-build-provenance` in the **Test and build** job | `gh attestation verify` |
+| GitHub build provenance for the wheel and sdist | `actions/attest-build-provenance` in the **Attest build provenance** job | `gh attestation verify` |
 | SHA-256 checksums | The **Record checksums** step, uploaded as a workflow artifact | `sha256sum --check` |
 
 Release tags are GPG-signed by **Create release tag**; check one with

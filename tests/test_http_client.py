@@ -95,7 +95,14 @@ def test_keycloak_request_refuses_redirect_to_ftp() -> None:
             keycloak_service._request("GET", f"{base_url}/realms")
 
 
-MALFORMED_URLS = ["http://[::1", "https://[::1/path", "http://]example.com"]
+MALFORMED_URLS = [
+    "http://[::1",
+    "https://[::1/path",
+    "http://]example.com",
+    "http://example.com:bad",
+    "https://example.com:99999",
+    "http://:8080",
+]
 
 
 @pytest.mark.parametrize("url", MALFORMED_URLS)

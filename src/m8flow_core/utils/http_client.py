@@ -36,13 +36,15 @@ ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 def is_http_url(url: str) -> bool:
     """Return whether ``url`` is an absolute http or https URL.
 
-    A URL that ``urlsplit`` cannot parse, such as ``http://[::1``, is not one.
+    A URL that ``urlsplit`` cannot parse, such as ``http://[::1``, or that has
+    no host or an invalid port, is not one.
     """
     try:
         parts = urlsplit(url)
+        _ = parts.port  # raises ValueError for a bad port
     except ValueError:
         return False
-    return parts.scheme.lower() in ALLOWED_URL_SCHEMES and bool(parts.netloc)
+    return parts.scheme.lower() in ALLOWED_URL_SCHEMES and bool(parts.hostname)
 
 
 class DisallowedRedirectError(URLError):
