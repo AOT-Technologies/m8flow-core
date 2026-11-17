@@ -977,8 +977,11 @@ def test_recurring_timer_creates_later_occurrence_while_first_instance_waits(
     assert recurring_job.locked_by is None
 
     assert api.run_due_scheduler_jobs(
-        session, now=datetime.fromtimestamp(300, UTC), tenant_id=tenant.id
+        session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
     ) == 1
+    assert _load_scheduler_job(
+        session, tenant_id=tenant.id, job_type="timer_start"
+    ).run_at.timestamp() == 600
     assert len(
         api.execute_query(
             session,
@@ -986,7 +989,7 @@ def test_recurring_timer_creates_later_occurrence_while_first_instance_waits(
         )
     ) == 1
     assert api.run_due_scheduler_jobs(
-        session, now=datetime.fromtimestamp(300, UTC), tenant_id=tenant.id
+        session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
     ) == 1
 
     process_instances = api.execute_query(
@@ -1048,10 +1051,10 @@ def test_failed_automatic_timer_task_does_not_block_later_cycles(
         assert first_instances[0].status == api.ProcessInstanceStatus.error
 
         assert api.run_due_scheduler_jobs(
-            session, now=datetime.fromtimestamp(300, UTC), tenant_id=tenant.id
+            session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
         ) == 1
         assert api.run_due_scheduler_jobs(
-            session, now=datetime.fromtimestamp(300, UTC), tenant_id=tenant.id
+            session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
         ) == 1
 
     process_instances = api.execute_query(
