@@ -183,7 +183,9 @@ def compile_message_catches(
             raise ValidationError("Message catches require unique BPMN IDs")
         message_ref = _ref(event, event.get("messageRef"))
         message = messages.get(message_ref)
-        name = message.get("name") if message is not None else None
+        if message is None:
+            raise ValidationError(f"Unknown BPMN message {message_ref!r}")
+        name = message.get("name")
         if name is None or not name.strip() or len(name) > 255:
             raise ValidationError("Message Catch Events require a named BPMN message")
         if process_id not in process_subscriptions:
@@ -198,7 +200,6 @@ def compile_message_catches(
                 f"Message catch {catch_id!r} requires one complete correlation key"
             )
         bindings = keys[0]
-        assert message is not None
         message_var = event.findtext(f".//{SPIFF}messageVariable") or message.findtext(
             f".//{SPIFF}messageVariable"
         )

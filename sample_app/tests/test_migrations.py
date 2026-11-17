@@ -140,7 +140,7 @@ def test_upgrade_from_previous_head_adds_indexes_and_preserves_data(migration_da
             connection.scalar(
                 text("SELECT version_num FROM m8flow_sample_app_alembic_version")
             )
-            == "20261110_0004"
+            == "20261116_0005"
         )
 
 
@@ -267,6 +267,8 @@ def test_migrations_reuse_existing_secret_table_and_foreign_alembic_state(
         "compensation_scope",
         "compensation_run",
         "compensation_record",
+        "message_subscription",
+        "message_delivery_receipt",
         "m8flow_sample_app_alembic_version",
     }.issubset(inspector.get_table_names())
 
@@ -276,7 +278,7 @@ def test_migrations_reuse_existing_secret_table_and_foreign_alembic_state(
             connection.execute(
                 text("select version_num from m8flow_sample_app_alembic_version")
             ).scalar()
-            == "20261110_0004"
+            == "20261116_0005"
         )
         assert (
             connection.execute(text("select version_num from alembic_version")).scalar()
