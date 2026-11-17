@@ -56,6 +56,14 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
   referencing a BPMN definition owned by another tenant.
 - Alembic revision `m8f_instance_process_tenant` prevents instances from
   referencing a BPMN process owned by another tenant.
+- Task code can raise a BPMN error that an error boundary event catches, for
+  models migrated from Camunda 7 (M8F-675). Scripts call
+  `raise BpmnError("CODE")`. Connectors raise
+  `ServiceTaskExecutionError(..., error_code="CODE")`, and the connector proxy
+  client sets `error_code` from the proxy's reply, such as `HttpError404`. The
+  nearest matching boundary cancels the task and takes over. Without a
+  matching boundary the task fails as before, and other Python exceptions are
+  never caught as BPMN errors.
 
 ### Changed
 
