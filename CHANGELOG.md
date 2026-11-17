@@ -7,6 +7,15 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Recurring timer start schedules now enqueue uniquely keyed occurrences and
+  advance from the original `timeCycle` cadence independently of process
+  execution. Process creation and occurrence completion share the caller's
+  transaction, preventing duplicate instances on retries. Failed automatic
+  script and service tasks consume their occurrence while preserving the
+  errored instance.
+
 ### Added
 
 - BPMN Transaction cancellation stops active work and timers, runs recorded

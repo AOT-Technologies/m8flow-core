@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from pathlib import Path
+from threading import Event, Lock
+from uuid import uuid4
+
+from sqlalchemy import select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
+
+from m8flow_core import api
+from m8flow_core.models.process_instance import ProcessInstanceStatus
+from m8flow_core.models.scheduler_job import SchedulerJobModel
+from m8flow_core.models.tenant import M8flowTenantModel
+from m8flow_core.models.user import UserModel
+from m8flow_core.services import scheduler_runtime
+from m8flow_core.services.authorization import ROLE_ADMIN, ensure_v1_role
+
+_CYCLE_BPMN_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "scheduled_cycle_timer_poc.bpmn"
+)
+_EPOCH = datetime.fromtimestamp(0, UTC)
+
+
+def test_postgres_overlapping_workers_advance_timer_cadence_once(
+    postgres_engine: Engine,
+    monkeypatch,
+) -> None:
+    tenant_id = f"postgres-timer-{uuid4().hex}"
+    with Session(bind=postgres_engine) as session:
+        tenant = M8flowTenantModel(
+            id=tenant_id,
+            name="Postgres Timer Test",
+            slug=tenant_id,
+        )
+        user = UserModel(
+            username=f"timer-admin-{uuid4().hex}",
+            email=f"timer-admin-{uuid4().hex}@example.com",
+            service=f"http://localhost:7002/realms/{tenant_id}",
+            service_id=f"timer-admin-{uuid4().hex}",
+            display_name="Timer Admin",
+            created_at=_EPOCH,
+            updated_at=_EPOCH,
+        )
+        session.add_all([tenant, user])
+        session.flush()
+        ensure_v1_role(
+            session,
+            tenant_id=tenant.id,
+            role_name=ROLE_ADMIN,
+            user_ids=[user.id],
+        )
+        bpmn_xml = _CYCLE_BPMN_PATH.read_text(encoding="utf-8").replace(
+            "__TIMER_CYCLE__", "R3/PT5M"
+        )
+        api.execute_command(
+            session,
+            api.ImportBpmnProcessDefinitionCommand(
+                tenant_id=tenant.id,
+                bpmn_identifier="postgres-recurring-timer",
+                user_id=user.id,
+                bpmn_name="Postgres Recurring Timer",
+                source_bpmn_xml=bpmn_xml,
+                created_at=_EPOCH,
+                updated_at=_EPOCH,
+            ),
+        )
+        timer_job = session.scalar(
+            select(SchedulerJobModel).where(
+                SchedulerJobModel.m8f_tenant_id == tenant.id,
+                SchedulerJobModel.job_type == "timer_start",
+            )
+        )
+        assert timer_job is not None
+        timer_job.run_at = _EPOCH
+        timer_job.payload_json = {
+            "scheduled_from": "postgres_timer_test",
+            "timer_task": {
+                "event_definition_type": "TimeCycleEventDefinition",
+                "event_value": {
+                    "cycles": 3,
+                    "next": _EPOCH.isoformat(),
+                    "duration": 300.0,
+                },
+                "run_at_in_seconds": 0,
+                "task_guid": "postgres-timer-start-guid",
+                "task_spec_name": "StartEvent_timer_cycle",
+                "task_spec_type": "StartEvent",
+            },
+        }
+        session.commit()
+
+    with Session(bind=postgres_engine) as session:
+        assert api.run_due_scheduler_jobs(
+            session,
+            now=_EPOCH,
+            tenant_id=tenant_id,
+            worker_id="timer-scheduler",
+        ) == 1
+        session.commit()
+
+    original_initialize = (
+        scheduler_runtime._initialize_process_instance_from_timer_start_definition
+    )
+    initialization_entered = Event()
+    release_initialization = Event()
+    initialized_once = False
+    initialization_guard = Lock()
+
+    def hold_first_initialization(session: Session, **kwargs):
+        nonlocal initialized_once
+        with initialization_guard:
+            should_hold = not initialized_once
+            initialized_once = True
+        if should_hold:
+            initialization_entered.set()
+            if not release_initialization.wait(timeout=20):
+                raise TimeoutError("Timed out waiting to release timer startup")
+        return original_initialize(session, **kwargs)
+
+    monkeypatch.setattr(
+        scheduler_runtime,
+        "_initialize_process_instance_from_timer_start_definition",
+        hold_first_initialization,
+    )
+
+    def run_worker(worker_id: str, now: datetime) -> int:
+        with Session(bind=postgres_engine) as session:
+            processed = api.run_due_scheduler_jobs(
+                session,
+                now=now,
+                tenant_id=tenant_id,
+                worker_id=worker_id,
+            )
+            session.commit()
+            return processed
+
+    assert run_worker(
+        "timer-cadence-worker", datetime.fromtimestamp(350, UTC)
+    ) == 1
+    assert not initialization_entered.is_set()
+    with Session(bind=postgres_engine) as session:
+        assert api.execute_query(
+            session,
+            api.ListProcessInstancesQuery(tenant_id=tenant_id),
+        ) == []
+        due_occurrences = list(
+            session.scalars(
+            select(SchedulerJobModel).where(
+                SchedulerJobModel.m8f_tenant_id == tenant_id,
+                SchedulerJobModel.job_type == "timer_start_occurrence",
+            )
+            .order_by(SchedulerJobModel.run_at)
+            ).all()
+        )
+        assert [job.run_at.timestamp() for job in due_occurrences] == [0, 300]
+        assert all(job.locked_by is None for job in due_occurrences)
+        next_schedule = session.scalar(
+            select(SchedulerJobModel).where(
+                SchedulerJobModel.m8f_tenant_id == tenant_id,
+                SchedulerJobModel.job_type == "timer_start",
+            )
+        )
+        assert next_schedule is not None
+        assert next_schedule.run_at.timestamp() == 600
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_worker = executor.submit(
+            run_worker, "timer-worker-one", datetime.fromtimestamp(350, UTC)
+        )
+        assert initialization_entered.wait(timeout=10)
+        try:
+            second_worker = executor.submit(
+                run_worker,
+                "timer-worker-two",
+                datetime.fromtimestamp(650, UTC),
+            )
+            assert second_worker.result(timeout=10) == 1
+            with Session(bind=postgres_engine) as session:
+                assert api.execute_query(
+                    session,
+                    api.ListProcessInstancesQuery(tenant_id=tenant_id),
+                ) == []
+                next_schedule = session.scalar(
+                    select(SchedulerJobModel).where(
+                        SchedulerJobModel.m8f_tenant_id == tenant_id,
+                        SchedulerJobModel.job_type == "timer_start",
+                    )
+                )
+                assert next_schedule is None
+        finally:
+            release_initialization.set()
+        assert first_worker.result(timeout=30) == 2
+
+    assert run_worker(
+        "timer-worker-three", datetime.fromtimestamp(650, UTC)
+    ) == 1
+    with Session(bind=postgres_engine) as session:
+        process_instances = api.execute_query(
+            session,
+            api.ListProcessInstancesQuery(tenant_id=tenant_id),
+        )
+        assert len(process_instances) == 3
+        assert all(
+            process_instance.status
+            == ProcessInstanceStatus.user_input_required.value
+            for process_instance in process_instances
+        )
+        next_schedule = session.scalar(
+            select(SchedulerJobModel).where(
+                SchedulerJobModel.m8f_tenant_id == tenant_id,
+                SchedulerJobModel.job_type == "timer_start",
+            )
+        )
+        assert next_schedule is None

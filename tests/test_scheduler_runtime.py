@@ -145,6 +145,36 @@ TIMER_START_CYCLE_BPMN = """<?xml version="1.0" encoding="UTF-8"?>
 </bpmn:definitions>
 """
 
+TIMER_START_CYCLE_FAILING_SERVICE_BPMN = TIMER_START_CYCLE_BPMN.replace(
+    'xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"',
+    'xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"\n'
+    '  xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"',
+).replace(
+    '<bpmn:userTask id="Task_1" name="Review Request" />',
+    """<bpmn:serviceTask id="Task_1" name="Failing automatic task">
+      <bpmn:extensionElements>
+        <spiffworkflow:serviceTaskOperator id="timer-test/Fail" />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>""",
+)
+
+TIMER_START_CYCLE_FAILING_SCRIPT_BPMN = TIMER_START_CYCLE_BPMN.replace(
+    '<bpmn:userTask id="Task_1" name="Review Request" />',
+    '''<bpmn:scriptTask id="Task_1" name="Failing automatic script">
+      <bpmn:script>raise Exception("timer automatic script failed")</bpmn:script>
+    </bpmn:scriptTask>''',
+)
+
+
+class FailingTimerServiceTaskConnector:
+    connector_key = "timer-test"
+
+    def list_commands(self) -> tuple[api.ServiceTaskCommandDefinition, ...]:
+        return (api.ServiceTaskCommandDefinition("timer-test", "Fail"),)
+
+    def execute(self, request: api.ServiceTaskRequest) -> api.ServiceTaskResult:
+        raise RuntimeError("automatic timer task failed")
+
 BOUNDARY_TIMER_BPMN = """<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -650,12 +680,18 @@ def test_run_due_scheduler_jobs_executes_timer_start_job(
     scheduler_job.run_at = datetime.fromtimestamp(0, UTC)
     session.flush()
 
+    scheduled_count = api.run_due_scheduler_jobs(
+        session,
+        worker_id="inline-timer-start-worker",
+        tenant_id=tenant.id,
+    )
     processed_count = api.run_due_scheduler_jobs(
         session,
         worker_id="inline-timer-start-worker",
         tenant_id=tenant.id,
     )
 
+    assert scheduled_count == 1
     assert processed_count == 1
     session.expire_all()
 
@@ -706,12 +742,18 @@ def test_run_due_scheduler_jobs_uses_definition_lane_owners_for_timer_start(
     scheduler_job.run_at = datetime.fromtimestamp(0, UTC)
     session.flush()
 
+    scheduled_count = api.run_due_scheduler_jobs(
+        session,
+        worker_id="inline-timer-start-worker",
+        tenant_id=tenant.id,
+    )
     processed_count = api.run_due_scheduler_jobs(
         session,
         worker_id="inline-timer-start-worker",
         tenant_id=tenant.id,
     )
 
+    assert scheduled_count == 1
     assert processed_count == 1
     session.expire_all()
 
@@ -762,12 +804,18 @@ def test_run_due_scheduler_jobs_executes_past_due_timer_start_definition(
     )
     session.flush()
 
+    scheduled_count = api.run_due_scheduler_jobs(
+        session,
+        worker_id="inline-timer-start-worker",
+        tenant_id=tenant.id,
+    )
     processed_count = api.run_due_scheduler_jobs(
         session,
         worker_id="inline-timer-start-worker",
         tenant_id=tenant.id,
     )
 
+    assert scheduled_count == 1
     assert processed_count == 1
     session.expire_all()
 
@@ -822,20 +870,37 @@ def test_run_due_scheduler_jobs_reschedules_recurring_timer_start_job(
     }
     session.flush()
 
-    processed_count = api.run_due_scheduler_jobs(
+    scheduled_count = api.run_due_scheduler_jobs(
         session,
+        now=datetime.fromtimestamp(0, UTC),
+        worker_id="inline-timer-start-worker",
+        tenant_id=tenant.id,
+    )
+    assert scheduled_count == 1
+    assert api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    ) == []
+
+    queued_count = api.run_due_scheduler_jobs(
+        session,
+        now=datetime.fromtimestamp(0, UTC),
         worker_id="inline-timer-start-worker",
         tenant_id=tenant.id,
     )
 
-    assert processed_count == 1
+    assert queued_count == 1
     session.expire_all()
 
     process_instances = api.execute_query(
         session,
         api.ListProcessInstancesQuery(tenant_id=tenant.id),
     )
-    scheduler_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    scheduler_job = _load_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_type="timer_start",
+    )
     human_tasks = list(
         session.scalars(
             select(WorkItemModel).order_by(WorkItemModel.id)
@@ -863,6 +928,435 @@ def test_run_due_scheduler_jobs_reschedules_recurring_timer_start_job(
             "task_spec_type": "StartEvent",
         },
     }
+
+
+def test_recurring_timer_creates_later_occurrence_while_first_instance_waits(
+    session: Session,
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-overlapping-occurrences",
+        bpmn_name="Timer Start Overlapping Occurrences",
+        source_bpmn_xml=TIMER_START_CYCLE_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(0, UTC)
+    timer_job.payload_json = {
+        "scheduled_from": "test",
+        "timer_task": {
+            "event_definition_type": "TimeCycleEventDefinition",
+            "event_value": {
+                "cycles": 3,
+                "next": "1970-01-01T00:00:00+00:00",
+                "duration": 300.0,
+            },
+            "run_at_in_seconds": 0,
+            "task_guid": "timer-start-cycle-guid",
+            "task_spec_name": "StartEvent_timer_cycle",
+            "task_spec_type": "StartEvent",
+        },
+    }
+    session.flush()
+
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 1
+    assert api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    ) == []
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 1
+    first_instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    )
+    assert len(first_instances) == 1
+    assert first_instances[0].status == api.ProcessInstanceStatus.user_input_required
+    recurring_job = _load_scheduler_job(
+        session, tenant_id=tenant.id, job_type="timer_start"
+    )
+    assert recurring_job.run_at.timestamp() == 300
+    assert recurring_job.locked_by is None
+
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
+    ) == 1
+    assert _load_scheduler_job(
+        session, tenant_id=tenant.id, job_type="timer_start"
+    ).run_at.timestamp() == 600
+    assert len(
+        api.execute_query(
+            session,
+            api.ListProcessInstancesQuery(tenant_id=tenant.id),
+        )
+    ) == 1
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
+    ) == 1
+
+    process_instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    )
+    assert len(process_instances) == 2
+    assert all(
+        instance.status == api.ProcessInstanceStatus.user_input_required
+        for instance in process_instances
+    )
+
+
+def test_failed_automatic_timer_task_does_not_block_later_cycles(
+    session: Session,
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-failing-automatic-task",
+        bpmn_name="Timer Start Failing Automatic Task",
+        source_bpmn_xml=TIMER_START_CYCLE_FAILING_SERVICE_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(0, UTC)
+    timer_job.payload_json = {
+        "scheduled_from": "test",
+        "timer_task": {
+            "event_definition_type": "TimeCycleEventDefinition",
+            "event_value": {
+                "cycles": 3,
+                "next": "1970-01-01T00:00:00+00:00",
+                "duration": 300.0,
+            },
+            "run_at_in_seconds": 0,
+            "task_guid": "timer-start-cycle-guid",
+            "task_spec_name": "StartEvent_timer_cycle",
+            "task_spec_type": "StartEvent",
+        },
+    }
+    session.flush()
+
+    with api.service_task_registry_scope(
+        api.ServiceTaskRegistry(connectors=(FailingTimerServiceTaskConnector(),))
+    ):
+        assert api.run_due_scheduler_jobs(
+            session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+        ) == 1
+        assert api.run_due_scheduler_jobs(
+            session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+        ) == 1
+        first_instances = api.execute_query(
+            session,
+            api.ListProcessInstancesQuery(tenant_id=tenant.id),
+        )
+        assert len(first_instances) == 1
+        assert first_instances[0].status == api.ProcessInstanceStatus.error
+
+        assert api.run_due_scheduler_jobs(
+            session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
+        ) == 1
+        assert api.run_due_scheduler_jobs(
+            session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
+        ) == 1
+
+    process_instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    )
+    assert len(process_instances) == 2
+    assert all(
+        instance.status == api.ProcessInstanceStatus.error
+        for instance in process_instances
+    )
+    assert _load_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_type="timer_start",
+    ).run_at.timestamp() == 600
+
+
+def test_failed_automatic_timer_script_is_consumed_and_later_cycles_run(
+    session: Session,
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-failing-automatic-script",
+        bpmn_name="Timer Start Failing Automatic Script",
+        source_bpmn_xml=TIMER_START_CYCLE_FAILING_SCRIPT_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(0, UTC)
+    timer_job.payload_json = {
+        "scheduled_from": "test",
+        "timer_task": {
+            "event_definition_type": "TimeCycleEventDefinition",
+            "event_value": {
+                "cycles": 3,
+                "next": "1970-01-01T00:00:00+00:00",
+                "duration": 300.0,
+            },
+            "run_at_in_seconds": 0,
+            "task_guid": "timer-start-cycle-guid",
+            "task_spec_name": "StartEvent_timer_cycle",
+            "task_spec_type": "StartEvent",
+        },
+    }
+    session.flush()
+
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 1
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 1
+    first_instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    )
+    assert len(first_instances) == 1
+    assert first_instances[0].status == api.ProcessInstanceStatus.error
+    failed_instance = session.scalar(
+        select(ProcessInstanceModel).where(
+            ProcessInstanceModel.m8f_tenant_id == tenant.id,
+            ProcessInstanceModel.id == first_instances[0].id,
+        )
+    )
+    assert failed_instance is not None
+    assert failed_instance.workflow_state_json is not None
+    assert session.scalar(
+        select(SchedulerJobModel.id).where(
+            SchedulerJobModel.m8f_tenant_id == tenant.id,
+            SchedulerJobModel.job_type == "timer_start_occurrence",
+        )
+    ) is None
+
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
+    ) == 1
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(350, UTC), tenant_id=tenant.id
+    ) == 1
+
+    process_instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    )
+    assert len(process_instances) == 2
+    assert all(
+        instance.status == api.ProcessInstanceStatus.error
+        for instance in process_instances
+    )
+    assert _load_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_type="timer_start",
+    ).run_at.timestamp() == 600
+    assert session.scalar(
+        select(SchedulerJobModel.id).where(
+            SchedulerJobModel.m8f_tenant_id == tenant.id,
+            SchedulerJobModel.job_type == "timer_start_occurrence",
+        )
+    ) is None
+
+
+def test_timer_start_occurrence_claim_and_poll_retry_is_idempotent(
+    session: Session,
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-poll-retry",
+        bpmn_name="Timer Start Poll Retry",
+        source_bpmn_xml=TIMER_START_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(0, UTC)
+    session.flush()
+
+    first_claim = scheduler_runtime.claim_due_scheduler_jobs(
+        session,
+        now=datetime.fromtimestamp(0, UTC),
+        worker_id="timer-worker-one",
+        tenant_id=tenant.id,
+    )
+    competing_claim = scheduler_runtime.claim_due_scheduler_jobs(
+        session,
+        now=datetime.fromtimestamp(0, UTC),
+        worker_id="timer-worker-two",
+        tenant_id=tenant.id,
+    )
+    assert len(first_claim) == 1
+    assert competing_claim == []
+
+    timer_job.locked_by = None
+    timer_job.locked_at = None
+    session.flush()
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 1
+
+    occurrence_attempt = session.begin_nested()
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 1
+    occurrence_attempt.rollback()
+    session.expunge_all()
+    assert api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    ) == []
+    assert session.scalar(
+        select(SchedulerJobModel.id).where(
+            SchedulerJobModel.m8f_tenant_id == tenant.id,
+            SchedulerJobModel.job_type == "timer_start_occurrence",
+        )
+    ) is not None
+
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 1
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 0
+    assert len(
+        api.execute_query(
+            session,
+            api.ListProcessInstancesQuery(tenant_id=tenant.id),
+        )
+    ) == 1
+
+
+def test_due_timer_start_is_claimed_separately_from_due_occurrence(
+    session: Session,
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    definition = _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-separate-cadence-claim",
+        bpmn_name="Timer Start Separate Cadence Claim",
+        source_bpmn_xml=TIMER_START_CYCLE_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(300, UTC)
+    upsert_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_key="timer_start_occurrence|test:due-at-zero",
+        job_type="timer_start_occurrence",
+        bpmn_process_definition_id=definition.id,
+        run_at=datetime.fromtimestamp(0, UTC),
+        payload_json={},
+        updated_at=datetime.fromtimestamp(0, UTC),
+    )
+    session.flush()
+
+    claimed_jobs = scheduler_runtime.claim_due_scheduler_jobs(
+        session,
+        now=datetime.fromtimestamp(350, UTC),
+        worker_id="timer-cadence-worker",
+        tenant_id=tenant.id,
+    )
+
+    assert [job.job_type for job in claimed_jobs] == ["timer_start"]
+    occurrence_job = session.scalar(
+        select(SchedulerJobModel).where(
+            SchedulerJobModel.m8f_tenant_id == tenant.id,
+            SchedulerJobModel.job_type == "timer_start_occurrence",
+        )
+    )
+    assert occurrence_job is not None
+    assert occurrence_job.locked_by is None
+
+
+def test_due_timer_start_advances_without_processing_due_occurrence(
+    session: Session,
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    definition = _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-due-cadence-and-occurrence",
+        bpmn_name="Timer Start Due Cadence and Occurrence",
+        source_bpmn_xml=TIMER_START_CYCLE_BPMN,
+    )
+    timer_task_payload = {
+        "event_definition_type": "TimeCycleEventDefinition",
+        "event_value": {
+            "cycles": 2,
+            "next": "1970-01-01T00:05:00+00:00",
+            "duration": 300.0,
+        },
+        "run_at_in_seconds": 300,
+        "task_guid": "timer-start-cycle-guid",
+        "task_spec_name": "StartEvent_timer_cycle",
+        "task_spec_type": "StartEvent",
+    }
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(300, UTC)
+    timer_job.payload_json = {"timer_task": timer_task_payload}
+    upsert_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_key="timer_start_occurrence|test:due-at-zero",
+        job_type="timer_start_occurrence",
+        bpmn_process_definition_id=definition.id,
+        run_at=datetime.fromtimestamp(0, UTC),
+        payload_json={
+            "occurrence_at": "1970-01-01T00:00:00+00:00",
+            "timer_task": {
+                **timer_task_payload,
+                "event_value": {
+                    "cycles": 3,
+                    "next": "1970-01-01T00:00:00+00:00",
+                    "duration": 300.0,
+                },
+                "run_at_in_seconds": 0,
+            },
+        },
+        updated_at=datetime.fromtimestamp(0, UTC),
+    )
+    session.flush()
+
+    assert api.run_due_scheduler_jobs(
+        session,
+        now=datetime.fromtimestamp(350, UTC),
+        tenant_id=tenant.id,
+    ) == 1
+
+    assert api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    ) == []
+    assert _load_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_type="timer_start",
+    ).run_at.timestamp() == 600
+    occurrence_jobs = list(
+        session.scalars(
+            select(SchedulerJobModel)
+            .where(
+                SchedulerJobModel.m8f_tenant_id == tenant.id,
+                SchedulerJobModel.job_type == "timer_start_occurrence",
+            )
+            .order_by(SchedulerJobModel.run_at)
+        ).all()
+    )
+    assert [job.run_at.timestamp() for job in occurrence_jobs] == [0, 300]
+    assert all(job.locked_by is None for job in occurrence_jobs)
 
 
 def test_run_due_scheduler_jobs_continues_batch_after_job_error(
@@ -1137,12 +1631,14 @@ def _load_scheduler_job(
     session: Session,
     *,
     tenant_id: str,
+    job_type: str | None = None,
 ) -> SchedulerJobModel:
-    scheduler_job = session.scalar(
-        select(SchedulerJobModel).where(
-            SchedulerJobModel.m8f_tenant_id == tenant_id
-        )
+    stmt = select(SchedulerJobModel).where(
+        SchedulerJobModel.m8f_tenant_id == tenant_id
     )
+    if job_type is not None:
+        stmt = stmt.where(SchedulerJobModel.job_type == job_type)
+    scheduler_job = session.scalar(stmt)
     assert scheduler_job is not None
     return scheduler_job
 

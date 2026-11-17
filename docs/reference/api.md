@@ -535,6 +535,10 @@ boundary timers, recurring timer starts, and scheduled retries. It's a service
 function, not a command, because your application calls it from a worker loop,
 not on behalf of a user. It takes the following parameters:
 
+A timer start first records a durable occurrence and advances its schedule.
+A later poll creates the process instance from that occurrence. The returned
+count includes each scheduling and execution job that was completed.
+
 | Parameter | Description |
 |---|---|
 | `session_or_connection` | A `Session` or `Connection`, with the same transaction rules as the dispatchers |

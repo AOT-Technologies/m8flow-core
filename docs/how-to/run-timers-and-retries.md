@@ -44,8 +44,17 @@ faster while there's work. It processes at most `limit` jobs per call, 100 by
 default. In tests, pass `now=` a timezone-aware `datetime` to decide what's due
 without waiting for the real clock.
 
-Run one poller per database, or one per tenant. The scheduler doesn't yet
-coordinate several workers that claim the same rows.
+Workers use database row locks and a conditional update to avoid claiming the
+same job concurrently on databases that support `SELECT FOR UPDATE SKIP
+LOCKED`. SQLite ignores those locks, so run one poller when using SQLite.
+Keep one writer per process instance because different jobs for the same
+instance are not serialized together.
+
+A timer start uses two durable jobs. One poll records the due occurrence and
+advances the recurring schedule. When a `timer_start` job is due, that poll
+handles start jobs separately from other due job types. Commit the poll
+transaction, then poll again to start process instances. This keeps a slow
+automatic step from holding the recurring schedule row locked.
 
 ## Handle scheduler failures
 
