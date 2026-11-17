@@ -1,8 +1,8 @@
 # Build and install the package
 
 This guide shows how to build m8flow-core as a wheel and install it in
-another project. The package isn't published to PyPI yet, so you build it from
-source.
+another project. You can use the PyPI package or build it from source for
+development and verification.
 
 ## Build the wheel
 

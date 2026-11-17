@@ -310,17 +310,19 @@ def _initialize_process_instance_from_timer_start_definition(
     process_model_identifier = process_definition.process_model_identifier or str(
         process_definition.id
     )
-    process_instance, selected_process_id = _prepare_process_instance_from_definition(
-        session,
-        tenant_id=tenant_id,
-        process_definition=process_definition,
-        process_model_identifier=process_model_identifier,
-        process_initiator_id=process_initiator_id,
-        submission_metadata=None,
-        summary=None,
-        process_version=1,
-        started_at=started_at,
-        bpmn_process_id=None,
+    process_instance, selected_process_id = (
+        _prepare_process_instance_from_definition_in_session(
+            session,
+            tenant_id=tenant_id,
+            process_definition=process_definition,
+            process_model_identifier=process_model_identifier,
+            process_initiator_id=process_initiator_id,
+            submission_metadata=None,
+            summary=None,
+            process_version=1,
+            started_at=started_at,
+            bpmn_process_id=None,
+        )
     )
 
     occurred_at = _resolve_timestamp(started_at)
@@ -355,7 +357,7 @@ def _initialize_process_instance_from_timer_start_definition(
         process_instance=process_instance,
         workflow=workflow,
         occurred_at=occurred_at,
-        autonomous_failure_state_persistence=True,
+        autonomous_failure_state_persistence=False,
     )
     forced_due = _force_waiting_timer_start_task_due(
         workflow,
@@ -371,7 +373,7 @@ def _initialize_process_instance_from_timer_start_definition(
                 process_instance=process_instance,
                 workflow=workflow,
                 occurred_at=occurred_at,
-                autonomous_failure_state_persistence=True,
+                autonomous_failure_state_persistence=False,
             )
 
     return _finalize_initialized_process_instance_workflow(
