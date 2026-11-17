@@ -12,6 +12,17 @@ from m8flow_core.services.call_activities import CallActivityResolver
 
 
 @dataclass(frozen=True, slots=True)
+class CorrelateMessageCommand:
+    tenant_id: str
+    message_name: str
+    user_id: int
+    delivery_id: str
+    payload: dict[str, Any]
+    process_definition_id: int | None = None
+    process_instance_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PublishSignalCommand:
     tenant_id: str
     signal_name: str

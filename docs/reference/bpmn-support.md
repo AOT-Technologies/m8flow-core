@@ -27,6 +27,7 @@ The following elements are supported:
 |---|---|
 | Start event (none) | |
 | End event (none) | |
+| Message intermediate catch | Receives one external delivery using a complete BPMN correlation key. See [Correlate external BPMN messages](../how-to/correlate-messages.md). |
 | Signal intermediate/end throw | Publishes successfully with zero or more listeners; local delivery is immediate |
 | Signal intermediate catch | Receives matching publications while waiting |
 | Signal boundary event | Interrupting and repeatable non-interrupting handlers |
@@ -101,7 +102,7 @@ names that exist in the BPMN, and none of them may also be a key in
 
 The following elements and behaviors aren't covered:
 
-- Message events and message correlation
+- Message starts, throws, boundary events, and message event subprocesses
 - Event subprocesses, other than the documented timer and signal forms
 - Error boundary events for errors thrown by error end events, and escalation
   boundary events

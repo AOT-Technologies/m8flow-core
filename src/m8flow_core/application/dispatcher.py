@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from m8flow_core.application.commands import (
     ClaimTaskCommand,
     CompleteTaskCommand,
+    CorrelateMessageCommand,
     CreateProcessInstanceCommand,
     ErrorProcessInstanceCommand,
     ImportBpmnProcessDefinitionCommand,
@@ -38,6 +39,7 @@ from m8flow_core.application.queries import (
     ListTerminatedProcessInstancesQuery,
 )
 from m8flow_core.services.compensation_journal import get_process_instance_compensations
+from m8flow_core.services.messages import correlate_message
 from m8flow_core.services.process_definitions import (
     import_bpmn_process_definition,
 )
@@ -102,6 +104,8 @@ def execute_command(
     command: object,
 ) -> object:
     with _session_scope(session_or_connection) as session:
+        if isinstance(command, CorrelateMessageCommand):
+            return correlate_message(session, command)
         if isinstance(command, PublishSignalCommand):
             return publish_signal(
                 session, tenant_id=command.tenant_id, signal_name=command.signal_name,

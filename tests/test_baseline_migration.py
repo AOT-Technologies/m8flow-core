@@ -28,7 +28,8 @@ from m8flow_core.settings import get_settings
 
 BASELINE_REVISION = "k2l3m4n5o6p7"
 SIGNAL_REVISION = "l3m4n5o6p7q8"
-HEAD_REVISION = "m8f_671_compensation"
+COMPENSATION_REVISION = "m8f_671_compensation"
+HEAD_REVISION = "m8f_694_message_correlation"
 
 POSTGRES_URL = os.getenv("M8FLOW_POSTGRES_UPGRADE_DATABASE_URL", "")
 
@@ -40,6 +41,7 @@ NAMED_CHECK_CONSTRAINTS = {
     "principal": {"m8f_principal_exactly_one_subject"},
     "process_instance_event": {"m8f_process_instance_event_category_check"},
     "signal_subscription": {"m8f_signal_subscription_references"},
+    "message_delivery_receipt": {"m8f_msg_receipt_outcome"},
 }
 
 
@@ -105,20 +107,22 @@ def _table_names(database_url: str) -> set[str]:
         engine.dispose()
 
 
-def test_migration_history_has_one_head_after_signal_revision() -> None:
+def test_migration_history_has_one_head_after_message_revision() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
 
     revisions = list(script.walk_revisions())
 
     assert [revision.revision for revision in revisions] == [
         HEAD_REVISION,
+        COMPENSATION_REVISION,
         SIGNAL_REVISION,
         BASELINE_REVISION,
     ]
     assert script.get_heads() == [HEAD_REVISION]
-    assert revisions[0].down_revision == SIGNAL_REVISION
-    assert revisions[1].down_revision == BASELINE_REVISION
-    assert revisions[2].down_revision is None
+    assert revisions[0].down_revision == COMPENSATION_REVISION
+    assert revisions[1].down_revision == SIGNAL_REVISION
+    assert revisions[2].down_revision == BASELINE_REVISION
+    assert revisions[3].down_revision is None
 
 
 _DATABASES = [

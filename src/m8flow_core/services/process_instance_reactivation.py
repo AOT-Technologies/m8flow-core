@@ -21,6 +21,7 @@ from m8flow_core.services.authorization import (
     PROCESS_RETRY_COMMAND,
     require_command_authorization,
 )
+from m8flow_core.services.message_registry import refresh_instance_messages
 from m8flow_core.services.process_instances import (
     _delete_scheduled_process_retry_job,
     _load_process_instance,
@@ -88,6 +89,7 @@ def resume_process_instance(
     )
 
     refresh_instance_signal_subscriptions(session, process_instance, occurred_at)
+    refresh_instance_messages(session, process_instance)
     session.flush()
     return process_instance
 
@@ -164,5 +166,6 @@ def retry_process_instance(
     )
 
     refresh_instance_signal_subscriptions(session, process_instance, occurred_at)
+    refresh_instance_messages(session, process_instance)
     session.flush()
     return process_instance

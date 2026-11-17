@@ -278,6 +278,9 @@ def suspend_process_instance(
     occurred_at = _resolve_timestamp(suspended_at)
     process_instance.status = ProcessInstanceStatus.suspended.value
     process_instance.updated_at = occurred_at
+    from m8flow_core.services.message_registry import retire_instance_messages
+
+    retire_instance_messages(session, process_instance)
     record_process_instance_event(
         session,
         tenant_id=tenant_id,
@@ -320,8 +323,10 @@ def error_process_instance(
         )
 
     occurred_at = _resolve_timestamp(errored_at)
+    from m8flow_core.services.message_registry import retire_instance_messages
     from m8flow_core.services.signal_registry import retire_instance_signals
 
+    retire_instance_messages(session, process_instance)
     retire_instance_signals(session, process_instance)
     process_instance.status = ProcessInstanceStatus.error.value
     process_instance.ended_at = occurred_at
@@ -505,9 +510,9 @@ def _load_process_instance(
             f"{process_instance_id} was not found for tenant {tenant_id}"
         )
     if lock:
-        from m8flow_core.services.signal_registry import lock_signal_instance
+        from m8flow_core.services.signal_registry import lock_event_instance
 
-        lock_signal_instance(session, process_instance)
+        lock_event_instance(session, process_instance)
     return process_instance
 
 

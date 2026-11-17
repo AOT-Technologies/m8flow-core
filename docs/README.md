@@ -31,6 +31,7 @@ process, starts it, and completes its task.
 ### How-to guides
 
 - [Publish and deliver BPMN signals](how-to/publish-signals.md)
+- [Correlate external BPMN messages](how-to/correlate-messages.md)
 
 Steps for one task, for readers who already know the basics:
 

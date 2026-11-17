@@ -6,6 +6,12 @@ from m8flow_core import api
 # contract change and should be paired with an entry in ``docs/reference/api.md``.
 EXPECTED_PUBLIC_API = frozenset(
     {
+        "CorrelateMessageCommand",
+        "MessageDeliveryReceiptModel",
+        "AmbiguousMessageCorrelationError",
+        "MessageDeliveryConflictError",
+        "MESSAGE_CORRELATE_COMMAND",
+        "validate_message_bpmn",
         "PublishSignalCommand",
         "RunSignalDeliveriesCommand",
         "GetSignalPublicationQuery",

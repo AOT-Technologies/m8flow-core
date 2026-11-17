@@ -16,6 +16,7 @@ from m8flow_core.services.authorization import (
     PROCESS_TERMINATE_COMMAND,
     require_command_authorization,
 )
+from m8flow_core.services.message_registry import retire_instance_messages
 from m8flow_core.services.process_instances import (
     _close_process_instance_runtime_state,
     _load_process_instance,
@@ -66,6 +67,7 @@ def terminate_process_instance(
     process_instance.ended_at = occurred_at
     process_instance.updated_at = occurred_at
     _cancel_compensation(session, process_instance, occurred_at)
+    retire_instance_messages(session, process_instance)
     retire_instance_signals(session, process_instance)
     _close_process_instance_runtime_state(
         session,

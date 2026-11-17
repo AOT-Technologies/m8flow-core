@@ -4,8 +4,8 @@ This page lists the tables that m8flow-core's ORM models define. The library
 ships the models in `m8flow_core.models` and, in `alembic/versions/`, an immutable
 Alembic baseline plus additive revisions. The baseline, `k2l3m4n5o6p7`, has
 no parent and builds the 1.0 schema on an empty database. Signal revision
-`l3m4n5o6p7q8` follows the baseline, and compensation revision
-`m8f_671_compensation` is the current head. See
+`l3m4n5o6p7q8` follows the baseline. Message revision
+`m8f_694_message_correlation` follows `m8f_671_compensation` and is the current head. See
 [Upgrade to 1.0](../how-to/upgrade-to-1.0.md) for existing databases.
 
 Table and column names are part of the compatibility contract, because host
@@ -50,6 +50,20 @@ The library defines the following tables:
 | `process_instance_metadata` | `ProcessInstanceMetadataModel` | Yes | Key and value pairs, including task payload values |
 | `scheduler_job` | `SchedulerJobModel` | Yes | Due timers and retries. [About scheduling](../explanation/scheduling.md#the-scheduler-job-table) lists its columns. |
 | `future_task` | `FutureTaskModel` | Yes | Runtime tasks waiting to run, with `run_at` and `queued_to_run_at` |
+
+## Message correlation
+
+| Table | Stable columns |
+|---|---|
+| `message_subscription` | `m8f_tenant_id`, `process_instance_id`, `task_guid`, `process_definition_id`, `message_name`, `property_paths`, `correlation_digest` |
+| `message_delivery_receipt` | `m8f_tenant_id`, `delivery_id`, `request_digest`, `process_instance_id`, `task_guid`, `outcome`, `delivered_at` |
+
+A subscription identifies a waiting task within a tenant and instance.
+`property_paths` holds the message retrieval paths by BPMN property ID.
+`correlation_digest` indexes the canonical, typed key. The subscription
+references its instance and definition through tenant-qualified foreign keys.
+Receipts use `(m8f_tenant_id, delivery_id)` as their primary key and retain
+the original target IDs so replay still works after an instance is purged.
 
 ## Signal registry
 

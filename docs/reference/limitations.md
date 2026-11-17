@@ -113,18 +113,16 @@ Missing:
 The library supports tenant-scoped BPMN signal publication. Hosts run one
 signal delivery loop per tenant; multi-worker signal delivery and external
 broker delivery are not supported. See [Publish signals](../how-to/publish-signals.md).
-BPMN message correlation remains unsupported.
+BPMN intermediate catches support synchronous external delivery by a modeled
+correlation key. See [Correlate external BPMN messages](../how-to/correlate-messages.md).
 
 Missing:
 
 - **Message start events**, which start a process from an inbound message such
   as `invoice.received` instead of an explicit start command.
-- **Intermediate message events**, such as sending `payment.requested` and
-  waiting for `payment.confirmed` before continuing.
-- **Message correlation keys and subscriptions**, which match an inbound payload such
-  as `order_id=123` to the instance waiting for it.
-- **Inbound message routing**, an entry point that turns a webhook or event-bus
-  message into "resume this instance at this catch event".
+- **Message throws, boundaries, and event-subprocess starts**.
+- **Buffered delivery** to a catch that starts waiting after the message arrives.
+- **Camunda business-key and REST compatibility**.
 - **Outbound delivery** of thrown messages and signals to email, Kafka, or
   other subscribers.
 

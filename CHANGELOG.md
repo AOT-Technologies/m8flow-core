@@ -9,6 +9,9 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
 
 ### Added
 
+- External correlation for Intermediate Message Catch Events through
+  `CorrelateMessageCommand`. BPMN bindings and retrieval paths form composite
+  keys. Delivery receipts are durable and idempotent within each tenant.
 - BPMN Transaction cancellation stops active work and timers, runs recorded
   compensation handlers, and follows the attached Cancel Boundary Event once.
   `validate_compensation_bpmn` lets hosts check supported forms before saving.

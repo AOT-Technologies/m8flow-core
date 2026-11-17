@@ -25,6 +25,7 @@ from m8flow_core.services.lane_assignment import (
     enroll_definition_lane_owners,
     validate_initiator_lanes,
 )
+from m8flow_core.services.message_model import validate_message_bpmn
 from m8flow_core.services.tenant_users import ensure_user_belongs_to_tenant
 from m8flow_core.services.workflow_runtime import (
     _RuntimeSpiffBpmnParser,
@@ -69,6 +70,8 @@ def import_bpmn_process_definition(
         bpmn_xml_text=source_bpmn_xml_text,
         dmn_xml_text=source_dmn_xml_text,
     )
+    if "messageEventDefinition" in source_bpmn_xml_text:
+        validate_message_bpmn(source_bpmn_xml_text)
     from m8flow_core.services.signal_registry import validate_signal_source
 
     validate_signal_source(source_bpmn_xml_text, source_dmn_xml_text)

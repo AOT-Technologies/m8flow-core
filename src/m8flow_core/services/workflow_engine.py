@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from SpiffWorkflow.bpmn.parser.BpmnParser import full_tag
 from SpiffWorkflow.bpmn.script_engine.python_engine import PythonScriptEngine
 from SpiffWorkflow.bpmn.script_engine.python_environment import TaskDataEnvironment
 from SpiffWorkflow.bpmn.serializer.default.task_spec import EventConverter
@@ -35,6 +36,12 @@ from m8flow_core.services.compensation_runtime import (
     CompensationCoordinator,
     connector_compensation_metadata,
 )
+from m8flow_core.services.message_model import MessageCatch, read_message_catches
+from m8flow_core.services.message_runtime import (
+    MessageCatchParser,
+    RuntimeMessageConverter,
+    RuntimeMessageDefinition,
+)
 from m8flow_core.services.service_tasks import (
     ServiceTaskContext,
     ServiceTaskRequest,
@@ -54,6 +61,7 @@ _WORKFLOW_SERIALIZER = BpmnWorkflowSerializer(
             CompensationThrow: CompensationEventConverter,
             CompensationEnd: CompensationEventConverter,
             TransactionCancelEnd: EventConverter,
+            RuntimeMessageDefinition: RuntimeMessageConverter,
         }
     ),
     version=_WORKFLOW_STATE_SERIALIZER_VERSION,
@@ -74,11 +82,30 @@ class _NoopDMNEngine:
 class _RuntimeSpiffBpmnParser(CompensationBpmnParser):
     """Spiff parser that can fall back to a no-op DMN engine for POC runs."""
 
+    OVERRIDE_PARSER_CLASSES = {
+        **CompensationBpmnParser.OVERRIDE_PARSER_CLASSES,
+        full_tag("intermediateCatchEvent"): (
+            MessageCatchParser,
+            CompensationBpmnParser.OVERRIDE_PARSER_CLASSES[full_tag("intermediateCatchEvent")][1],
+        ),
+    }
+
     def __init__(
         self, *args: Any, use_noop_dmn_engine: bool = True, **kwargs: Any
     ) -> None:
         super().__init__(*args, **kwargs)
         self._use_noop_dmn_engine = use_noop_dmn_engine
+        self.message_catches: dict[tuple[str, str], MessageCatch] = {}
+
+    def add_bpmn_str(self, bpmn_str: bytes, filename: str | None = None) -> None:
+        if b"messageEventDefinition" in bpmn_str:
+            try:
+                self.message_catches.update(read_message_catches(bpmn_str))
+            except ValidationError:
+                # New imports are validated separately. Previously stored
+                # unmanaged models can still restore their native Spiff specs.
+                pass
+        super().add_bpmn_str(bpmn_str, filename=filename)
 
     def get_engine(self, decision_ref: str, node: object) -> Any:
         if not self._use_noop_dmn_engine:

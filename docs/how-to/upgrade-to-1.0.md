@@ -114,7 +114,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-The second command must report `m8f_671_compensation` as the head.
+The second command must report `m8f_694_message_correlation` as the head.
 
 ### Check a database that is already at `k2l3m4n5o6p7`
 
