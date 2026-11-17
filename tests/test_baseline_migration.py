@@ -429,12 +429,14 @@ def test_instance_constraints_reject_cross_tenant_references(
                 process_initiator_id=user_id,
             )
             valid_id = connection.scalar(
-                insert.values({instance.c.m8f_tenant_id: "one", reference: target_id})
-                .returning(instance.c.id)
+                insert.values(
+                    {instance.c.m8f_tenant_id: "one", reference: target_id}
+                ).returning(instance.c.id)
             )
             invalid_id = connection.scalar(
-                insert.values({instance.c.m8f_tenant_id: "two", reference: target_id})
-                .returning(instance.c.id)
+                insert.values(
+                    {instance.c.m8f_tenant_id: "two", reference: target_id}
+                ).returning(instance.c.id)
             )
 
         if model is BpmnProcessModel:
@@ -451,11 +453,15 @@ def test_instance_constraints_reject_cross_tenant_references(
             command.upgrade(config, "head")
 
         with engine.begin() as connection:
-            assert connection.scalar(
-                sa.select(reference).where(instance.c.id == invalid_id)
-            ) == target_id
+            assert (
+                connection.scalar(
+                    sa.select(reference).where(instance.c.id == invalid_id)
+                )
+                == target_id
+            )
             connection.execute(
-                instance.update().where(instance.c.id == invalid_id)
+                instance.update()
+                .where(instance.c.id == invalid_id)
                 .values({reference: None})
             )
 
@@ -482,7 +488,8 @@ def test_instance_constraints_reject_cross_tenant_references(
                 connection.begin_nested(),
             ):
                 connection.execute(
-                    instance.update().where(instance.c.id == invalid_id)
+                    instance.update()
+                    .where(instance.c.id == invalid_id)
                     .values({reference: target_id})
                 )
 
@@ -496,12 +503,13 @@ def test_instance_constraints_reject_cross_tenant_references(
 
         command.downgrade(config, previous_revision)
         with engine.begin() as connection:
-            assert connection.scalar(
-                sa.select(reference).where(instance.c.id == valid_id)
-            ) == target_id
-            assert connection.scalar(
-                sa.select(sa.func.count()).select_from(instance)
-            ) == 4
+            assert (
+                connection.scalar(sa.select(reference).where(instance.c.id == valid_id))
+                == target_id
+            )
+            assert (
+                connection.scalar(sa.select(sa.func.count()).select_from(instance)) == 4
+            )
             connection.execute(
                 insert.values({instance.c.m8f_tenant_id: "two", reference: target_id})
             )

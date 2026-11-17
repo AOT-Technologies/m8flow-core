@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Enforce tenant ownership of an instance's BPMN process."""
 
 import sqlalchemy as sa
@@ -36,9 +41,7 @@ def upgrade() -> None:
 
     op.create_index(_INDEX, _PROCESS, _PROCESS_COLUMNS, unique=True)
     with op.batch_alter_table(_INSTANCE) as batch:
-        batch.create_foreign_key(
-            _FK, _PROCESS, _INSTANCE_COLUMNS, _PROCESS_COLUMNS
-        )
+        batch.create_foreign_key(_FK, _PROCESS, _INSTANCE_COLUMNS, _PROCESS_COLUMNS)
 
 
 def downgrade() -> None:

@@ -78,7 +78,8 @@ def claim_due_scheduler_jobs(
             lock_collaboration_definition(session, definitions[definition_id])
         # Application transitions can reschedule or remove jobs while we wait.
         due_jobs = [
-            job for job in list_due_scheduler_jobs(
+            job
+            for job in list_due_scheduler_jobs(
                 session, now=occurred_at, limit=limit, tenant_id=tenant_id
             )
             if job.id in job_ids

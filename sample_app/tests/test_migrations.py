@@ -131,15 +131,19 @@ def test_upgrade_existing_sample_app_adds_collaboration_schema(migration_databas
     )
     assert any(
         index["name"] == COLLABORATION_INDEX
-        and index["column_names"] == [
-            "m8f_tenant_id", "bpmn_process_definition_id", "bpmn_version_id",
+        and index["column_names"]
+        == [
+            "m8f_tenant_id",
+            "bpmn_process_definition_id",
+            "bpmn_version_id",
             "collaboration_correlation_key",
         ]
         for index in inspector.get_indexes("process_instance")
     )
     assert any(
         key["name"] == COLLABORATION_FK
-        and key["constrained_columns"] == ["m8f_tenant_id", "bpmn_process_definition_id"]
+        and key["constrained_columns"]
+        == ["m8f_tenant_id", "bpmn_process_definition_id"]
         and key["referred_table"] == "bpmn_process_definition"
         and key["referred_columns"] == ["m8f_tenant_id", "id"]
         for key in inspector.get_foreign_keys("process_instance")

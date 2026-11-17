@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Add instance correlation keys for BPMN collaborations."""
 
 import sqlalchemy as sa
