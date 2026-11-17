@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from m8flow_core.models.base import Base
@@ -17,6 +17,9 @@ from m8flow_core.models.tenant_scoped import M8fTenantScopedMixin, TenantScoped
 
 class BpmnProcessModel(M8fTenantScopedMixin, TenantScoped, Base):
     __tablename__ = "bpmn_process"
+    __table_args__ = (
+        Index("m8f_bpmn_process_tenant_id_key", "m8f_tenant_id", "id", unique=True),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     guid: Mapped[str | None] = mapped_column(String(36), unique=True)
     bpmn_process_definition_id: Mapped[int] = mapped_column(

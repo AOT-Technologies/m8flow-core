@@ -11,15 +11,17 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
+
+from m8flow_core.db import build_engine as build_core_engine
 
 from m8flow_sample_app.settings import get_settings
 
 
 def build_engine(database_url: str | None = None, echo: bool | None = None) -> Engine:
     settings = get_settings()
-    return create_engine(
+    return build_core_engine(
         database_url or settings.database_url,
         echo=settings.database_echo if echo is None else echo,
     )

@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy import DateTime, ForeignKey, ForeignKeyConstraint, Index, String, and_
 from sqlalchemy.orm import (
     Mapped,
     mapped_column,
@@ -19,6 +19,7 @@ from sqlalchemy.orm import (
 )
 
 from m8flow_core.models.base import Base
+from m8flow_core.models.bpmn_process import BpmnProcessModel
 from m8flow_core.models.json_data import JsonDataModel
 from m8flow_core.models.tenant_scoped import M8fTenantScopedMixin, TenantScoped
 
@@ -56,7 +57,24 @@ _ACTIVE_STATUSES: tuple[str, ...] = (
 class ProcessInstanceModel(M8fTenantScopedMixin, TenantScoped, Base):
     __tablename__ = "process_instance"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ("m8f_tenant_id", "bpmn_process_id"),
+            ("bpmn_process.m8f_tenant_id", "bpmn_process.id"),
+            name="fk_process_instance_process_tenant",
+        ),
+        ForeignKeyConstraint(
+            ("m8f_tenant_id", "bpmn_process_definition_id"),
+            ("bpmn_process_definition.m8f_tenant_id", "bpmn_process_definition.id"),
+            name="fk_process_instance_definition_tenant",
+        ),
         Index("m8f_process_instance_tenant_id_key", "m8f_tenant_id", "id", unique=True),
+        Index(
+            "ix_process_instance_collaboration_lookup",
+            "m8f_tenant_id",
+            "bpmn_process_definition_id",
+            "bpmn_version_id",
+            "collaboration_correlation_key",
+        ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     process_model_identifier: Mapped[str] = mapped_column(
@@ -105,10 +123,22 @@ class ProcessInstanceModel(M8fTenantScopedMixin, TenantScoped, Base):
         ForeignKey("process_model_bpmn_version.id"),
         index=True,
     )
+    collaboration_correlation_key: Mapped[str | None] = mapped_column(String(255))
 
     process_initiator = relationship("UserModel")
-    bpmn_process_definition = relationship("BpmnProcessDefinitionModel")
-    bpmn_process = relationship("BpmnProcessModel")
+    # Keep the original ID-only synchronization; the composite FK validates
+    # the tenant already assigned to this instance.
+    bpmn_process_definition = relationship(
+        "BpmnProcessDefinitionModel", foreign_keys=[bpmn_process_definition_id]
+    )
+    bpmn_process = relationship(
+        BpmnProcessModel,
+        primaryjoin=lambda: and_(
+            ProcessInstanceModel.bpmn_process_id == BpmnProcessModel.id,
+            ProcessInstanceModel.m8f_tenant_id == BpmnProcessModel.m8f_tenant_id,
+        ),
+        foreign_keys=[bpmn_process_id],
+    )
     tasks = relationship(
         "TaskModel", back_populates="process_instance", cascade="all, delete-orphan"
     )
@@ -156,15 +186,16 @@ class ProcessInstanceModel(M8fTenantScopedMixin, TenantScoped, Base):
 
     @property
     def workflow_state_json(self) -> str | None:
-        if self.bpmn_process is None:
+        process = self.bpmn_process
+        if process is None or process.m8f_tenant_id != self.m8f_tenant_id:
             return None
         session = object_session(self)
         if session is None:
             return None
         json_data = JsonDataModel.get_for_tenant(
             session,
-            self.bpmn_process.m8f_tenant_id,
-            self.bpmn_process.json_data_hash,
+            self.m8f_tenant_id,
+            process.json_data_hash,
         )
         if json_data is None:
             return None

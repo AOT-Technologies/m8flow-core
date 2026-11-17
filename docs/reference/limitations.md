@@ -116,19 +116,22 @@ Missing:
 
 ## Messaging and correlation
 
+The library supports direct modeled Message Flows between top-level Message
+Events in executable pools of the same collaboration version. Delivery uses
+the scheduler. Intermediate catches use a caller-supplied instance key.
+
 The library supports tenant-scoped BPMN signal publication. Hosts run one
 signal delivery loop per tenant; multi-worker signal delivery and external
 broker delivery are not supported. See [Publish signals](../how-to/publish-signals.md).
-BPMN message correlation remains unsupported.
 
 Missing:
 
-- **Message start events**, which start a process from an inbound message such
-  as `invoice.received` instead of an explicit start command.
-- **Intermediate message events**, such as sending `payment.requested` and
-  waiting for `payment.confirmed` before continuing.
-- **Message correlation keys and subscriptions**, which match an inbound payload such
-  as `order_id=123` to the instance waiting for it.
+- **Signal starts for collaboration participants**. Signal starts are supported
+  for single-process definitions.
+- **Model-defined correlation expressions and business payload mappings**,
+  such as extracting `order_id` from a message.
+- **Other executable endpoints**, such as send and receive tasks, message
+  boundary events, and message events inside subprocesses.
 - **Inbound message routing**, an entry point that turns a webhook or event-bus
   message into "resume this instance at this catch event".
 - **Outbound delivery** of thrown messages and signals to email, Kafka, or
@@ -138,22 +141,24 @@ Missing:
 
 Call activities are supported through the host-supplied resolver described in
 the [API reference](api.md#initializeprocessinstancefromdefinitioncommand).
-Sequential and parallel multi-instance script tasks are covered too; see
-[BPMN support](bpmn-support.md#supported-elements).
+Sequential and parallel multi-instance activities, including user tasks, are
+covered too; see [BPMN support](bpmn-support.md#supported-elements).
 The following BPMN features aren't tested in the library:
 
 - **Event subprocesses**, triggered by events inside a running parent process,
-  often for cancellation or exception handling. Non-interrupting timer and
-  interrupting/non-interrupting signal event subprocesses are covered.
+  often for cancellation or exception handling. Non-interrupting timer,
+  interrupting/non-interrupting signal, and error and escalation event
+  subprocesses are covered; message and conditional ones aren't.
 - **Advanced compensation combinations.** Boundary handlers and scoped
   throws and end events are supported, as is Transaction cancellation.
   Compensation models that require event subprocesses, loops, multi-instance
   activities, call activities, nested Transactions inside a cancellable
   Transaction, or automatic compensation from BPMN errors are rejected. See
   [Run compensation handlers](../how-to/run-compensation.md).
-- **Error and escalation boundary events**, for typed business errors such as
-  a service task raising `INSUFFICIENT_FUNDS`. Timer boundary events are
-  covered; these aren't.
+- **Errors raised by task code, in event subprocesses.** A script's
+  `raise BpmnError("INSUFFICIENT_FUNDS")` or a connector's coded failure is
+  caught only by a matching error boundary. Error event subprocesses catch
+  errors thrown by the model, such as by an error end event, but not these.
 - **Other non-interrupting events**, beyond the tested timer and signal forms.
 
 ## Operations and observability

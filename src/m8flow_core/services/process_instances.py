@@ -12,6 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from m8flow_core.errors import InvalidStateError, NotFoundError
+from m8flow_core.models.bpmn_process import BpmnProcessModel
+from m8flow_core.models.bpmn_process_definition import BpmnProcessDefinitionModel
 from m8flow_core.models.process_instance import (
     ProcessInstanceModel,
     ProcessInstanceStatus,
@@ -34,6 +36,7 @@ from m8flow_core.services.authorization import (
     PROCESS_SUSPEND_COMMAND,
     require_command_authorization,
 )
+from m8flow_core.services.collaborations import lock_collaboration_instance
 from m8flow_core.services.scheduler_jobs import (
     build_scheduler_job_key,
     delete_scheduler_job,
@@ -68,6 +71,28 @@ def create_process_instance(
         tenant_id=tenant_id,
         user_id=process_initiator_id,
     )
+    definition_id = session.scalar(
+        select(BpmnProcessDefinitionModel.id).where(
+            BpmnProcessDefinitionModel.id == bpmn_process_definition_id,
+            BpmnProcessDefinitionModel.m8f_tenant_id == tenant_id,
+        )
+    )
+    if definition_id is None:
+        raise NotFoundError(
+            f"BPMN process definition {bpmn_process_definition_id} was not found "
+            f"for tenant {tenant_id}"
+        )
+    process_id = session.scalar(
+        select(BpmnProcessModel.id).where(
+            BpmnProcessModel.id == bpmn_process_id,
+            BpmnProcessModel.m8f_tenant_id == tenant_id,
+        )
+    )
+    if process_id is None:
+        raise NotFoundError(
+            f"BPMN process {bpmn_process_id} was not found for tenant {tenant_id}"
+        )
+
     occurred_at = _resolve_timestamp(created_at)
     process_instance = ProcessInstanceModel(
         m8f_tenant_id=tenant_id,
@@ -507,6 +532,7 @@ def _load_process_instance(
     if lock:
         from m8flow_core.services.signal_registry import lock_signal_instance
 
+        lock_collaboration_instance(session, process_instance)
         lock_signal_instance(session, process_instance)
     return process_instance
 

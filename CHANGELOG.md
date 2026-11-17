@@ -29,6 +29,27 @@ and what each version part means.
   docs.
 - CI uploads test coverage from `main` to Codecov, and the README shows a
   coverage badge. The PyPI badge now reads the latest version from PyPI.
+- BPMN collaborations deploy multiple executable pools from one file. Modeled
+  messages start or resume a participant through the tenant-scoped scheduler.
+  Run `alembic upgrade head` before starting the updated runtime
+  and scheduler pollers.
+- Alembic revision `m8f_merge_runtime` joins the collaboration and compensation
+  migration branches without changing either history.
+- Alembic revision `m8f_instance_definition_tenant` prevents instances from
+  referencing a BPMN definition owned by another tenant.
+- Alembic revision `m8f_instance_process_tenant` prevents instances from
+  referencing a BPMN process owned by another tenant.
+- Task code can raise a BPMN error that an error boundary event catches, for
+  models migrated from Camunda 7 (M8F-675). Scripts call
+  `raise BpmnError("CODE")`. Connectors raise
+  `ServiceTaskExecutionError(..., error_code="CODE")`, and the connector proxy
+  client sets `error_code` from the proxy's reply, such as `HttpError404`. The
+  nearest matching boundary cancels the task and takes over. Without a
+  matching boundary the task fails as before, and other Python exceptions are
+  never caught as BPMN errors.
+- Multi-instance runtime values. Each iteration sees `loopCounter` (zero-based,
+  as in Camunda 7), `nrOfInstances`, `nrOfActiveInstances` and
+  `nrOfCompletedInstances`, and a `completionCondition` can use them.
 
 ### Changed
 
@@ -40,6 +61,40 @@ and what each version part means.
   pull request code no longer holds the `id-token: write` permission.
 - The publish workflow attests build provenance in its own job, so the job
   that runs the tests no longer holds the `id-token: write` permission.
+- SQLite engines created with `m8flow_core.db.build_engine()` enforce foreign
+  keys on every connection. Process instance creation reports missing and
+  out-of-tenant BPMN references as `NotFoundError`.
+- Imports now reject BPMN collaborations with multiple pools but fewer than
+  two distinct executable participant processes.
+- Multi-instance iterations keep their input item, output item and runtime
+  values to themselves; without an output mapping, their other variables still
+  flow back. Parallel output collections now list results in input order, and
+  an activity that runs again starts a new output collection instead of failing.
+- `advance_process_instance_workflow` takes an optional `task_payload`, and
+  `CompleteTaskCommand` passes it. A human task inside a multi-instance
+  iteration applies its payload to that iteration only instead of recording it
+  as process instance metadata, so one iteration's form values can't reach
+  another. Other tasks record their payload as before.
+
+### Fixed
+
+- A `loopCardinality` multi-instance loop no longer fails with `NameError` when
+  its output collection already exists (a SpiffWorkflow 3.2.0 bug).
+- Error and escalation events now go to the nearest matching catcher (M8F-665).
+  The walk starts in the thrower's scope and moves out one scope at a time. In
+  each scope its event subprocesses come first, then boundary events on the
+  activity that hosts the scope. Before, SpiffWorkflow broadcast the event to
+  every matching catcher in the process, so with matching boundaries at two
+  levels the outer one won.
+- Event subprocesses with an error or escalation start event now run only when
+  a matching event is thrown (M8F-665). SpiffWorkflow parsed those start events
+  as none starts, so the handler ran every time its scope started and caught
+  nothing. The handler starts from the thrower's data. An interrupting one,
+  the BPMN default, cancels the rest of its scope, including waiting user
+  tasks; one with `isInterrupting="false"` runs beside the main path.
+- An escalation that nothing catches is ignored and the flow continues, and an
+  error end event that nothing catches ends its path like a plain end event.
+  Neither puts the instance into an error state (M8F-665).
 
 ### Security
 

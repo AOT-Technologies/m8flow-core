@@ -9,6 +9,14 @@ title = "m8flow-core Gitleaks Config"
 useDefault = true
 
 [[allowlists]]
+description = "Reserved collaboration metadata key in the process definition JSON"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^src/m8flow_core/models/bpmn_process_definition\.py$''']
+regexTarget = "line"
+regexes = ['''(?m)^COLLABORATION_PROPERTY_KEY = "__m8f_collaboration"\r?$''']
+
+[[allowlists]]
 description = "Sample environment file with local-development defaults"
 paths = [
   '''^sample\.env$''',

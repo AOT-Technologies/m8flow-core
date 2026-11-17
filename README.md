@@ -46,6 +46,9 @@ The library covers the following:
 
 - **Process definitions.** Import BPMN XML and optional DMN XML, validated
   before anything is stored.
+- **BPMN collaborations.** Deploy multiple executable pools from one file.
+  Modeled messages start a participant or resume a correlated instance
+  through the scheduler.
 - **Process execution.** Start instances from stored definitions and run them
   through exclusive and parallel gateways, script tasks, and DMN business rule
   tasks.
@@ -175,9 +178,8 @@ m8flow-core 1.0 is the first stable release. The public surface is the
 [changelog](CHANGELOG.md) records every change to either. Releases follow
 [Semantic Versioning](docs/reference/versioning.md): a breaking change to
 the public contract ships only in a new major version. Coming from
-`m8flow-bpmn-core` 0.x? Follow [Upgrade to 1.0](docs/how-to/upgrade-to-1.0.md). Messaging and correlation, and
-tenant and user management aren't covered yet. [Limitations](docs/reference/limitations.md) lists every known
-gap.
+`m8flow-bpmn-core` 0.x? Follow [Upgrade to 1.0](docs/how-to/upgrade-to-1.0.md).
+[Limitations](docs/reference/limitations.md) describes the supported boundaries.
 
 ## Get help and contribute
 

@@ -11,12 +11,17 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from SpiffWorkflow.bpmn.parser.util import full_tag
 from SpiffWorkflow.bpmn.script_engine.python_engine import PythonScriptEngine
+from SpiffWorkflow.bpmn.script_engine.python_environment import TaskDataEnvironment
 from SpiffWorkflow.bpmn.serializer.default.task_spec import EventConverter
 from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
 from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from SpiffWorkflow.dmn.specs.model import DecisionTable
 from SpiffWorkflow.spiff.serializer.config import SPIFF_CONFIG
+from SpiffWorkflow.spiff.serializer.event_definition import (
+    MessageEventDefinitionConverter,
+)
 
 from m8flow_core.errors import (
     CallActivityResolutionError,
@@ -28,6 +33,11 @@ from m8flow_core.services.call_activities import (
     CallActivityDefinition,
     CallActivityResolver,
 )
+from m8flow_core.services.collaboration_events import (
+    CollaborationCatchDefinition,
+    CollaborationThrowDefinition,
+)
+from m8flow_core.services.collaborations import collaboration_parser_source
 from m8flow_core.services.compensation_parser import (
     CompensationBpmnParser,
     CompensationEnd,
@@ -38,6 +48,14 @@ from m8flow_core.services.compensation_parser import (
 from m8flow_core.services.compensation_runtime import (
     CompensationCoordinator,
     connector_compensation_metadata,
+)
+from m8flow_core.services.error_escalation_runtime import (
+    EventSubprocessStartEventParser,
+    install_scoped_error_escalation_throw,
+)
+from m8flow_core.services.multi_instance_runtime import (
+    adapt_multi_instance_specs,
+    configure_multi_instance_serializer,
 )
 from m8flow_core.services.service_tasks import (
     ServiceTaskContext,
@@ -55,6 +73,8 @@ _WORKFLOW_SERIALIZER = BpmnWorkflowSerializer(
     registry=BpmnWorkflowSerializer.configure(
         {
             **SPIFF_CONFIG,
+            CollaborationCatchDefinition: MessageEventDefinitionConverter,
+            CollaborationThrowDefinition: MessageEventDefinitionConverter,
             CompensationThrow: CompensationEventConverter,
             CompensationEnd: CompensationEventConverter,
             TransactionCancelEnd: EventConverter,
@@ -63,6 +83,7 @@ _WORKFLOW_SERIALIZER = BpmnWorkflowSerializer(
     version=_WORKFLOW_STATE_SERIALIZER_VERSION,
 )
 configure_signal_serializer(_WORKFLOW_SERIALIZER.registry)
+configure_multi_instance_serializer(_WORKFLOW_SERIALIZER.registry)
 
 
 class _NoopDMNEngine:
@@ -78,6 +99,14 @@ class _NoopDMNEngine:
 class _RuntimeSpiffBpmnParser(CompensationBpmnParser):
     """Spiff parser that can fall back to a no-op DMN engine for POC runs."""
 
+    OVERRIDE_PARSER_CLASSES = {
+        **CompensationBpmnParser.OVERRIDE_PARSER_CLASSES,
+        full_tag("startEvent"): (
+            EventSubprocessStartEventParser,
+            CompensationBpmnParser.OVERRIDE_PARSER_CLASSES[full_tag("startEvent")][1],
+        ),
+    }
+
     def __init__(
         self, *args: Any, use_noop_dmn_engine: bool = True, **kwargs: Any
     ) -> None:
@@ -90,6 +119,24 @@ class _RuntimeSpiffBpmnParser(CompensationBpmnParser):
         return _NoopDMNEngine(decision_ref)
 
 
+class BpmnError(Exception):
+    """Raised by script code to throw a BPMN error, as Camunda's ``BpmnError``.
+
+    Scripts call ``raise BpmnError("CODE")`` or ``raise BpmnError("CODE",
+    "message")``. The nearest error boundary with that code, or with no code,
+    catches it (M8F-675). Without a matching catcher the task fails.
+    """
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        super().__init__(f"{code}: {message}" if message else code)
+        self.code = code
+        self.message = message
+
+
+def _script_environment() -> TaskDataEnvironment:
+    return TaskDataEnvironment({"BpmnError": BpmnError})
+
+
 class _RuntimeServiceTaskScriptEngine(PythonScriptEngine):
     """Script engine that routes Spiff service tasks through the registry."""
 
@@ -100,7 +147,7 @@ class _RuntimeServiceTaskScriptEngine(PythonScriptEngine):
         process_instance_id: int | None,
         process_definition_id: int | None,
     ) -> None:
-        super().__init__()
+        super().__init__(environment=_script_environment())
         self._tenant_id = tenant_id
         self._process_instance_id = process_instance_id
         self._process_definition_id = process_definition_id
@@ -184,13 +231,15 @@ def _build_workflow(
     service_task_context: ServiceTaskContext | None = None,
     call_activity_resolver: CallActivityResolver | None = None,
     call_activity_context: CallActivityContext | None = None,
+    collaboration: Mapping[str, Any] | None = None,
 ) -> BpmnWorkflow:
     parser = _RuntimeSpiffBpmnParser(
         validator=None,
         use_noop_dmn_engine=dmn_xml is None,
     )
+    source = _coerce_xml_bytes(bpmn_xml)
     parser.add_bpmn_str(
-        _coerce_xml_bytes(bpmn_xml),
+        collaboration_parser_source(source) if collaboration else source,
         filename="runtime-workflow.bpmn",
     )
     if bpmn_process_id is None:
@@ -217,12 +266,16 @@ def _build_workflow(
         )
     spec = parser.get_spec(selected_process_id)
     subprocess_specs = parser.get_subprocess_specs(selected_process_id)
+    if collaboration:
+        _bind_collaboration_events(spec, selected_process_id, collaboration)
     workflow = BpmnWorkflow(
         spec,
         subprocess_specs,
         script_engine=_service_task_script_engine(service_task_context),
     )
     adapt_signal_definitions(spec, subprocess_specs)
+    adapt_multi_instance_specs(spec, subprocess_specs)
+    install_scoped_error_escalation_throw(workflow)
     if parser.has_compensation:
         comp = CompensationCoordinator(workflow, _WORKFLOW_SERIALIZER)
         comp.state["bindings"] = parser.compensation_bindings
@@ -238,6 +291,31 @@ def _build_workflow(
                 },
             }
     return workflow
+
+
+def _bind_collaboration_events(
+    spec: Any, process_id: str, collaboration: Mapping[str, Any]
+) -> None:
+    for flow in collaboration["message_flows"]:
+        if flow["target_kind"] is None:
+            continue
+        if flow["source_process_id"] == process_id:
+            throw = spec.task_specs.get(flow["source_ref"])
+            if throw is not None:
+                event = throw.event_definition
+                throw.event_definition = CollaborationThrowDefinition(
+                    event.name,
+                    event.correlation_properties,
+                    event.expression,
+                    event.message_var,
+                    event.process_correlations,
+                )
+        if flow["target_process_id"] == process_id:
+            catch = spec.task_specs.get(flow["target_ref"])
+            if catch is not None:
+                catch.event_definition = CollaborationCatchDefinition(
+                    catch.event_definition.name
+                )
 
 
 def _load_called_process_definitions(
@@ -369,6 +447,7 @@ def _restore_workflow(
     workflow = _WORKFLOW_SERIALIZER.from_dict(payload)
     workflow.script_engine = _service_task_script_engine(service_task_context)
     adapt_signal_definitions(workflow.spec, workflow.subprocess_specs)
+    install_scoped_error_escalation_throw(workflow)
     if compensation is not None:
         handlers = compensation.pop("handlers", {})
         comp = CompensationCoordinator(workflow, _WORKFLOW_SERIALIZER, compensation)
@@ -399,7 +478,7 @@ def _service_task_script_engine(
     service_task_context: ServiceTaskContext | None,
 ) -> PythonScriptEngine:
     if service_task_context is None:
-        return PythonScriptEngine()
+        return PythonScriptEngine(environment=_script_environment())
     return _RuntimeServiceTaskScriptEngine(
         tenant_id=service_task_context.tenant_id,
         process_instance_id=service_task_context.process_instance_id,

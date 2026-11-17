@@ -116,14 +116,26 @@ Replace the following:
   tenant. The admin needs the `process_definition.import` permission, and the
   requester needs `process.start`, `task.claim`, and `task.complete`.
 
-`bpmn_process_id` is required only when the BPMN file contains more than one
-executable process.
+## Start participants from one collaboration
+
+Pass the complete BPMN file to `ImportBpmnProcessDefinitionCommand`. The
+returned definition's `collaboration_metadata["executable_process_ids"]`
+lists the participants you can select with `bpmn_process_id`.
+
+For independently started instances that exchange a message, pass the same
+business key as `collaboration_correlation_key` in each start command. A
+message-started participant inherits its sender's key. Run
+`api.run_due_scheduler_jobs` in a worker transaction to deliver committed
+messages. The [Order and Fulfilment example](run-the-examples.md#run-the-sqlite-examples)
+shows both paths.
 
 ## Pass form values with the task
 
 Send the values a user enters in a form as `CompleteTaskCommand.task_payload`.
 The library stores each key as a process metadata row. Values are stored as
-strings, so convert numbers and booleans when you read them back.
+strings, so convert numbers and booleans when you read them back. A task inside
+a multi-instance iteration is the exception: its payload is applied to that
+iteration only and leaves it through the loop's output mapping.
 
 To seed metadata when the process starts, use
 `InitializeProcessInstanceFromDefinitionCommand.submission_metadata`.
