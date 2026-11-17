@@ -22,6 +22,10 @@ from m8flow_core.models.scheduler_job import SchedulerJobModel, SchedulerJobType
 from m8flow_core.models.tenant import M8flowTenantModel
 from m8flow_core.models.user import UserModel
 from m8flow_core.services.authorization import ROLE_ADMIN, ensure_v1_role
+from m8flow_core.services.collaboration_delivery import (
+    execute_collaboration_message_job,
+)
+from m8flow_core.services.collaborations import lock_collaboration_definition
 from m8flow_core.services.process_instance_reactivation import (
     retry_process_instance,
 )
@@ -67,12 +71,54 @@ def claim_due_scheduler_jobs(
         # Commit cadence advancement before a later poll can block while
         # starting an occurrence from the timer.
         criteria.append(SchedulerJobModel.job_type == SchedulerJobType.timer_start)
-    candidate_jobs = list(
+
+    due_jobs = list(
         session.scalars(
             select(SchedulerJobModel)
             .where(*criteria)
             .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
             .limit(limit)
+        ).all()
+    )
+    if not due_jobs:
+        return []
+
+    candidate_job_ids = {job.id for job in due_jobs}
+    definitions = {
+        definition.id: definition
+        for job in due_jobs
+        if (definition := job.bpmn_process_definition) is not None
+        and definition.m8f_tenant_id == job.m8f_tenant_id
+        and definition.collaboration_metadata is not None
+    }
+    if definitions:
+        for definition_id in sorted(definitions):
+            lock_collaboration_definition(session, definitions[definition_id])
+        # Collaboration state transitions can reschedule jobs while we wait.
+        due_jobs = list(
+            session.scalars(
+                select(SchedulerJobModel)
+                .where(
+                    *criteria,
+                    SchedulerJobModel.id.in_(candidate_job_ids),
+                )
+                .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
+                .limit(limit)
+            ).all()
+        )
+
+    candidate_ids = [job.id for job in due_jobs]
+    if not candidate_ids:
+        return []
+
+    candidate_jobs = list(
+        session.scalars(
+            select(SchedulerJobModel)
+            .where(
+                *criteria,
+                SchedulerJobModel.id.in_(candidate_ids),
+            )
+            .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
             .with_for_update(skip_locked=True)
         ).all()
     )
@@ -137,7 +183,7 @@ def run_due_scheduler_jobs(
 
     for job in claimed_jobs:
         try:
-            _execute_claimed_scheduler_job(
+            processed = _execute_claimed_scheduler_job(
                 session,
                 job=job,
                 occurred_at=occurred_at,
@@ -161,7 +207,8 @@ def run_due_scheduler_jobs(
             wrapped_error.__cause__ = exc
             batch_errors.append((job.job_key, wrapped_error))
         else:
-            processed_count += 1
+            if processed is not False:
+                processed_count += 1
 
     if len(batch_errors) == 1:
         raise batch_errors[0][1]
@@ -176,35 +223,39 @@ def _execute_claimed_scheduler_job(
     *,
     job: SchedulerJobModel,
     occurred_at: datetime,
-) -> None:
+) -> bool:
     if job.job_type == SchedulerJobType.intermediate_timer.value:
         _execute_intermediate_timer_job(
             session,
             job=job,
             occurred_at=occurred_at,
         )
-        return
+        return True
     if job.job_type == SchedulerJobType.process_retry.value:
         _execute_process_retry_job(
             session,
             job=job,
             occurred_at=occurred_at,
         )
-        return
+        return True
     if job.job_type == SchedulerJobType.timer_start.value:
         _schedule_timer_start_occurrence(
             session,
             job=job,
             occurred_at=occurred_at,
         )
-        return
+        return True
     if job.job_type == SchedulerJobType.timer_start_occurrence.value:
         _execute_timer_start_occurrence(
             session,
             job=job,
             occurred_at=occurred_at,
         )
-        return
+        return True
+    if job.job_type == SchedulerJobType.collaboration_message.value:
+        return execute_collaboration_message_job(
+            session, job=job, occurred_at=occurred_at
+        )
 
     raise ValidationError(
         f"Scheduler job type {job.job_type!r} is not executable yet"
@@ -397,6 +448,7 @@ def _execute_timer_start_occurrence(
         tenant_id=job.m8f_tenant_id,
         occurred_at=occurred_at,
     )
+    process_id = timer_task_payload.get("bpmn_process_id")
     try:
         _initialize_process_instance_from_timer_start_definition(
             session,
@@ -406,6 +458,7 @@ def _execute_timer_start_occurrence(
             timer_start_task_spec_name=_scheduler_job_task_spec_name(
                 timer_task_payload
             ),
+            bpmn_process_id=process_id if isinstance(process_id, str) else None,
             started_at=occurred_at,
         )
     except (ServiceTaskExecutionError, CompensationExecutionError):

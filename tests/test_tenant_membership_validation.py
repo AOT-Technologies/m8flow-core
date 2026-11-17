@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -115,6 +115,43 @@ def test_get_pending_tasks_rejects_user_from_other_tenant(
     assert [item.id for item in foreign_pending_tasks] == [
         context.foreign_human_task.id
     ]
+
+
+def test_create_process_instance_checks_bpmn_references(session: Session) -> None:
+    context = _seed_validation_context(session)
+    command = api.CreateProcessInstanceCommand(
+        tenant_id=context.tenant.id,
+        process_model_identifier="tenant-validation-process",
+        process_model_display_name="Tenant Validation Process",
+        process_initiator_id=context.tenant_user.id,
+        bpmn_process_definition_id=context.definition.id,
+        bpmn_process_id=context.process_instance.bpmn_process.id,
+    )
+    with pytest.raises(api.NotFoundError, match="BPMN process definition"):
+        api.execute_command(
+            session,
+            replace(
+                command,
+                bpmn_process_definition_id=(
+                    context.foreign_process_instance.bpmn_process_definition_id
+                ),
+            ),
+        )
+    with pytest.raises(api.NotFoundError, match="BPMN process .* not found"):
+        api.execute_command(
+            session,
+            replace(
+                command,
+                bpmn_process_id=context.foreign_process_instance.bpmn_process.id,
+            ),
+        )
+    with pytest.raises(api.NotFoundError, match="BPMN process .* not found"):
+        api.execute_command(session, replace(command, bpmn_process_id=-1))
+
+    instance = api.execute_command(session, command)
+    assert isinstance(instance, ProcessInstanceModel)
+    assert instance.bpmn_process.id == command.bpmn_process_id
+    assert instance.m8f_tenant_id == command.tenant_id
 
 
 def test_claim_and_complete_task_reject_cross_tenant_users(

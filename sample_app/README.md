@@ -196,7 +196,12 @@ m8flow backend.
 
 Revision `20261104_0003` adds the four signal registry tables and the composite
 parent indexes they reference. Revision `20261110_0004` follows it and adds the
-three compensation journal tables. Startup applies both revisions automatically.
+three compensation journal tables. Revision `20261112_0005` adds the
+collaboration key, lookup index, and same-tenant definition reference.
+Revision `20261116_0006` adds a same-tenant reference to the instance's BPMN
+process. The sample app enables foreign-key enforcement on its SQLite
+connections.
+Startup applies these revisions automatically.
 You can also run `uv run alembic upgrade head` from `sample_app/` before starting
 the app. Upgrading from `20260706_0002` preserves existing tenant, user, secret,
 and workflow data. If a shared host already created the signal tables, the
