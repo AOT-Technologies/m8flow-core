@@ -16,6 +16,7 @@ To fire due jobs, call `run_due_scheduler_jobs` in a loop, each time inside
 its own transaction:
 
 ```python
+import logging
 import time
 
 from sqlalchemy import create_engine
@@ -23,14 +24,23 @@ from sqlalchemy import create_engine
 from m8flow_core import api
 
 engine = create_engine(DATABASE_URL)
+logger = logging.getLogger(__name__)
 
 while True:
+    scheduler_error = None
     with engine.begin() as connection:
-        processed = api.run_due_scheduler_jobs(
-            connection,
-            worker_id="inline-scheduler-1",
-            tenant_id=TENANT_ID,
-        )
+        try:
+            processed = api.run_due_scheduler_jobs(
+                connection,
+                worker_id="inline-scheduler-1",
+                tenant_id=TENANT_ID,
+            )
+        except api.BpmnCoreError as exc:
+            # Commit successful jobs and the failed job's release/backoff.
+            scheduler_error = exc
+            processed = 0
+    if scheduler_error is not None:
+        logger.error("Scheduler poll failed: %s", scheduler_error)
     time.sleep(5 if processed == 0 else 1)
 ```
 
@@ -51,10 +61,11 @@ Keep one writer per process instance because different jobs for the same
 instance are not serialized together.
 
 A timer start uses two durable jobs. One poll records the due occurrence and
-advances the recurring schedule. When a `timer_start` job is due, that poll
-handles start jobs separately from other due job types. Commit the poll
-transaction, then poll again to start process instances. This keeps a slow
-automatic step from holding the recurring schedule row locked.
+advances the recurring schedule. Scheduler polls process cadence rows
+separately from executable jobs, with the oldest unlocked due job choosing the
+poll class. Commit the poll transaction, then poll again to start process
+instances. If a slow occurrence is locked by another worker, another poll can
+advance the cadence without waiting for it.
 
 ## Deliver collaboration messages
 

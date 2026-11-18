@@ -1122,6 +1122,318 @@ def test_scheduler_claim_survives_database_truncating_lock_timestamp(
     assert persisted.locked_at == datetime.fromtimestamp(10, UTC)
 
 
+def test_persistently_overdue_cadence_alternates_with_execution_jobs(
+    session: Session,
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    other_tenant = M8flowTenantModel(
+        id="tenant-scheduler-overdue-other",
+        name="Other Scheduler Tenant",
+        slug="tenant-scheduler-overdue-other",
+    )
+    other_user = UserModel(
+        username="other-scheduler-overdue-admin",
+        email="other-scheduler-overdue-admin@example.com",
+        service="http://localhost:7002/realms/tenant-scheduler-overdue-other",
+        service_id="other-scheduler-overdue-admin-keycloak",
+        display_name="Other Scheduler Admin",
+        created_at=datetime.fromtimestamp(1, UTC),
+        updated_at=datetime.fromtimestamp(1, UTC),
+    )
+    session.add_all([other_tenant, other_user])
+    session.flush()
+    ensure_v1_role(
+        session,
+        tenant_id=other_tenant.id,
+        role_name=ROLE_ADMIN,
+        user_ids=[other_user.id],
+    )
+    _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-persistently-overdue",
+        bpmn_name="Timer Start Persistently Overdue",
+        source_bpmn_xml=TIMER_START_CYCLE_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(0, UTC)
+    timer_job.payload_json = {
+        "scheduled_from": "test",
+        "timer_task": {
+            "event_definition_type": "TimeCycleEventDefinition",
+            "event_value": {
+                "cycles": 99,
+                "next": "1970-01-01T00:00:00+00:00",
+                "duration": 1.0,
+            },
+            "run_at_in_seconds": 0,
+            "task_guid": "timer-start-overdue-guid",
+            "task_spec_name": "StartEvent_timer_cycle",
+            "task_spec_type": "StartEvent",
+        },
+    }
+    failed_instance = _create_stub_process_instance(
+        session,
+        tenant_id=other_tenant.id,
+        user_id=other_user.id,
+        process_model_identifier="scheduler-overdue-intermediate-timer",
+    )
+    upsert_scheduler_job(
+        session,
+        tenant_id=other_tenant.id,
+        job_key=f"intermediate_timer|pi:{failed_instance.id}|q:overdue",
+        job_type=SchedulerJobType.intermediate_timer,
+        process_instance_id=failed_instance.id,
+        run_at=datetime.fromtimestamp(0, UTC),
+        updated_at=datetime.fromtimestamp(0, UTC),
+        created_at=datetime.fromtimestamp(0, UTC),
+    )
+    session.commit()
+
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC)
+    ) == 1
+    session.commit()
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(2, UTC)
+    ) == 2
+    session.commit()
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(4, UTC)
+    ) == 1
+    session.commit()
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(6, UTC)
+    ) == 1
+    session.commit()
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(8, UTC)
+    ) == 1
+    session.commit()
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(10, UTC)
+    ) == 1
+    session.commit()
+
+    instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    )
+    assert len(instances) == 3
+    assert all(
+        instance.status == api.ProcessInstanceStatus.user_input_required
+        for instance in instances
+    )
+    assert failed_instance.status == api.ProcessInstanceStatus.error
+    assert session.get(ProcessInstanceModel, failed_instance.id) is failed_instance
+    assert session.scalar(
+        select(SchedulerJobModel.id).where(
+            SchedulerJobModel.m8f_tenant_id == other_tenant.id,
+            SchedulerJobModel.job_type == SchedulerJobType.intermediate_timer,
+        )
+    ) is None
+    recurring_job = _load_scheduler_job(
+        session, tenant_id=tenant.id, job_type=SchedulerJobType.timer_start.value
+    )
+    assert recurring_job.run_at.timestamp() == 3
+
+
+def test_due_cadence_poll_keeps_all_execution_job_types_eligible(
+    session: Session, monkeypatch
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    definition = _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-execution-job-fairness",
+        bpmn_name="Timer Start Execution Job Fairness",
+        source_bpmn_xml=TIMER_START_CYCLE_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(10, UTC)
+    failed_instance = _create_stub_process_instance(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        process_model_identifier="execution-job-fairness",
+    )
+    run_at = datetime.fromtimestamp(0, UTC)
+    execution_jobs = (
+        (
+            "timer_start_occurrence|test:fairness",
+            SchedulerJobType.timer_start_occurrence,
+        ),
+        ("intermediate_timer|test:fairness", SchedulerJobType.intermediate_timer),
+        ("process_retry|test:fairness", SchedulerJobType.process_retry),
+        ("collaboration_message|test:fairness", SchedulerJobType.collaboration_message),
+    )
+    for job_key, job_type in execution_jobs:
+        upsert_scheduler_job(
+            session,
+            tenant_id=tenant.id,
+            job_key=job_key,
+            job_type=job_type,
+            process_instance_id=(
+                failed_instance.id
+                if job_type
+                in {
+                    SchedulerJobType.intermediate_timer,
+                    SchedulerJobType.process_retry,
+                }
+                else None
+            ),
+            bpmn_process_definition_id=(
+                definition.id
+                if job_type
+                in {
+                    SchedulerJobType.timer_start_occurrence,
+                    SchedulerJobType.collaboration_message,
+                }
+                else None
+            ),
+            run_at=run_at,
+            payload_json={},
+            updated_at=run_at,
+            created_at=run_at,
+        )
+    session.flush()
+
+    processed_types: list[str] = []
+
+    def process_and_delete(session, *, job, occurred_at):
+        processed_types.append(job.job_type)
+        delete_scheduler_job(
+            session,
+            tenant_id=job.m8f_tenant_id,
+            job_key=job.job_key,
+        )
+        return True
+
+    monkeypatch.setattr(
+        scheduler_runtime, "_execute_claimed_scheduler_job", process_and_delete
+    )
+
+    assert api.run_due_scheduler_jobs(
+        session,
+        now=datetime.fromtimestamp(10, UTC),
+        tenant_id=tenant.id,
+    ) == len(execution_jobs)
+
+    assert set(processed_types) == {job_type.value for _, job_type in execution_jobs}
+    assert timer_job.job_type == SchedulerJobType.timer_start.value
+    assert timer_job.run_at.timestamp() == 10
+
+
+def test_repeated_execution_failure_cannot_starve_overdue_timer_cadence(
+    session: Session, monkeypatch
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-failing-retry-fairness",
+        bpmn_name="Timer Start Failing Retry Fairness",
+        source_bpmn_xml=TIMER_START_CYCLE_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(0, UTC)
+    timer_job.payload_json = {
+        "scheduled_from": "test",
+        "timer_task": {
+            "event_definition_type": "TimeCycleEventDefinition",
+            "event_value": {
+                "cycles": 99,
+                "next": "1970-01-01T00:00:00+00:00",
+                "duration": 1.0,
+            },
+            "run_at_in_seconds": 0,
+            "task_guid": "timer-start-failing-retry-guid",
+            "task_spec_name": "StartEvent_timer_cycle",
+            "task_spec_type": "StartEvent",
+        },
+    }
+    failed_instance = _create_stub_process_instance(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        process_model_identifier="repeatedly-failing-scheduler-retry",
+    )
+    retry_job = upsert_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_key=f"process_retry|pi:{failed_instance.id}|q:repeat",
+        job_type=SchedulerJobType.process_retry,
+        process_instance_id=failed_instance.id,
+        run_at=datetime.fromtimestamp(-1, UTC),
+        payload_json={"requested_by_user_id": user.id},
+        updated_at=datetime.fromtimestamp(0, UTC),
+        created_at=datetime.fromtimestamp(0, UTC),
+    )
+    session.commit()
+
+    execute_job = scheduler_runtime._execute_claimed_scheduler_job
+
+    def fail_retry(session, *, job, occurred_at):
+        if job.job_type == SchedulerJobType.process_retry.value:
+            raise api.ValidationError("retry keeps failing")
+        return execute_job(session, job=job, occurred_at=occurred_at)
+
+    monkeypatch.setattr(
+        scheduler_runtime, "_execute_claimed_scheduler_job", fail_retry
+    )
+
+    with pytest.raises(api.ValidationError, match="retry keeps failing"):
+        api.run_due_scheduler_jobs(
+            session, now=datetime.fromtimestamp(2, UTC), tenant_id=tenant.id
+        )
+    session.commit()
+    session.expire_all()
+    retry_job = session.get(SchedulerJobModel, retry_job.id)
+    assert retry_job is not None
+    assert retry_job.run_at == datetime.fromtimestamp(3, UTC)
+    assert retry_job.locked_by is None
+
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(4, UTC), tenant_id=tenant.id
+    ) == 1
+    session.commit()
+    for now_in_seconds in (6, 10, 14):
+        with pytest.raises(api.ValidationError, match="retry keeps failing"):
+            api.run_due_scheduler_jobs(
+                session,
+                now=datetime.fromtimestamp(now_in_seconds, UTC),
+                tenant_id=tenant.id,
+            )
+        session.commit()
+        if now_in_seconds < 14:
+            assert api.run_due_scheduler_jobs(
+                session,
+                now=datetime.fromtimestamp(now_in_seconds + 2, UTC),
+                tenant_id=tenant.id,
+            ) == 1
+            session.commit()
+
+    session.expire_all()
+    recurring_job = _load_scheduler_job(
+        session, tenant_id=tenant.id, job_type=SchedulerJobType.timer_start.value
+    )
+    assert recurring_job.run_at == datetime.fromtimestamp(3, UTC)
+    retry_job = session.get(SchedulerJobModel, retry_job.id)
+    assert retry_job is not None
+    assert retry_job.run_at == datetime.fromtimestamp(15, UTC)
+    instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    )
+    assert sum(
+        instance.status == api.ProcessInstanceStatus.user_input_required
+        for instance in instances
+    ) == 3
+
+
 def test_failed_automatic_timer_task_does_not_block_later_cycles(
     session: Session,
 ) -> None:

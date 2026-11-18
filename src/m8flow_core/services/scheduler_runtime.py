@@ -42,6 +42,7 @@ from m8flow_core.services.workflow_runtime import (
 
 _TIMER_START_SYSTEM_USERNAME = "__m8f_timer_start__"
 _TIMER_START_SYSTEM_SERVICE_ID_PREFIX = "__m8f_timer_start__"
+_SCHEDULER_FAILURE_RETRY_DELAY = timedelta(seconds=1)
 
 
 def claim_due_scheduler_jobs(
@@ -62,36 +63,27 @@ def claim_due_scheduler_jobs(
     ]
     if tenant_id is not None:
         criteria.append(SchedulerJobModel.m8f_tenant_id == tenant_id)
-    due_occurrence_ids = list(
-        session.scalars(
-            select(SchedulerJobModel.id)
-            .where(
-                *criteria,
-                SchedulerJobModel.job_type == SchedulerJobType.timer_start_occurrence,
-            )
-            .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
-            .limit(limit)
-            .with_for_update(skip_locked=True)
-        ).all()
+    oldest_due_job = session.scalar(
+        select(SchedulerJobModel)
+        .where(*criteria)
+        .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
+        .limit(1)
+        .with_for_update(skip_locked=True)
     )
-    if due_occurrence_ids:
-        # Keep occurrence execution in its own poll. A slow startup must not
-        # hold the cadence row, and another poll can advance cadence if every
-        # due occurrence is already locked by a worker.
+    if oldest_due_job is None:
+        return []
+    if oldest_due_job.job_type == SchedulerJobType.timer_start.value:
+        # Keep cadence advancement in its own poll. If an older occurrence is
+        # locked by a slow worker, SKIP LOCKED lets another poll advance cadence.
         criteria.append(
-            SchedulerJobModel.job_type == SchedulerJobType.timer_start_occurrence
+            SchedulerJobModel.job_type == SchedulerJobType.timer_start
         )
     else:
-        due_timer_start = session.scalar(
-            select(SchedulerJobModel.id)
-            .where(
-                *criteria,
-                SchedulerJobModel.job_type == SchedulerJobType.timer_start,
-            )
-            .limit(1)
+        # Treat all executable jobs as one phase so a due recurring schedule
+        # cannot starve retries, intermediate timers, or collaboration messages.
+        criteria.append(
+            SchedulerJobModel.job_type != SchedulerJobType.timer_start
         )
-        if due_timer_start is not None:
-            criteria.append(SchedulerJobModel.job_type == SchedulerJobType.timer_start)
 
     due_jobs = list(
         session.scalars(
@@ -505,6 +497,18 @@ def _release_scheduler_job_lock(
 
     existing_job.locked_by = None
     existing_job.locked_at = None
+    due_cadence_exists = session.scalar(
+        select(SchedulerJobModel.id)
+        .where(
+            SchedulerJobModel.job_type == SchedulerJobType.timer_start,
+            SchedulerJobModel.run_at <= updated_at,
+        )
+        .limit(1)
+    )
+    if existing_job.run_at <= updated_at and due_cadence_exists is not None:
+        # Defer a failed job briefly so a permanently failing oldest job does
+        # not monopolize every poll or spin at the scheduler's poll frequency.
+        existing_job.run_at = updated_at + _SCHEDULER_FAILURE_RETRY_DELAY
     existing_job.updated_at = updated_at
     session.flush()
 

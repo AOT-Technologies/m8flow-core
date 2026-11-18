@@ -60,10 +60,13 @@ In practice, the table behaves like a small durable queue:
 4. When the job runs, the row is either deleted or rewritten with its next due
    time.
 
-When a `timer_start` job is due, the pass claims due start jobs by themselves,
-without claiming other job types. Commit that pass before polling again so
-cadence advancement is durable before process startup can block in automatic
-work.
+Each pass selects the class of the oldest unlocked due job. A cadence pass
+claims due `timer_start` jobs by themselves; an execution pass claims due
+occurrences, intermediate timers, retries, and collaboration messages. This
+keeps cadence advancement in a separate transaction from process startup, while
+allowing overdue execution work to progress between cadence passes. If an
+execution row is locked by another worker, `SKIP LOCKED` lets a poller advance
+the cadence instead.
 
 ## Storage helpers
 
@@ -200,8 +203,12 @@ wake up. The library claims due jobs, starts timer instances, restores and
 advances workflows, runs retries, and reschedules timers.
 
 If one claimed job fails, the runner releases its lock, finishes the other
-jobs in the batch, and then raises: the original error for one failure, or a
-summary `BpmnCoreError` for several.
+jobs in the batch, and moves a still-due job's `run_at` one second past the
+poll time. A committed failure therefore gives other due job classes a chance
+to run before retrying. Catch the error inside the caller's transaction to
+commit successful jobs and the failed job's release delay. Letting it escape
+rolls back the whole poll, including this delay. The runner then raises the
+original error for one failure, or a summary `BpmnCoreError` for several.
 
 Workers claim rows with `SELECT FOR UPDATE SKIP LOCKED` and a conditional
 update, so supported databases do not let overlapping polls claim the same
