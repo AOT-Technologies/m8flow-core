@@ -61,6 +61,8 @@ with the same arguments, such as `api.claim_task(...)` or
 
 ### CorrelateMessageCommand
 
+External message correlation serves catches in single-process definitions.
+
 | Field | Type | Required |
 |---|---|---|
 | `tenant_id` | `str` | Yes |
@@ -106,6 +108,7 @@ invocation and validate the allowed tenant before dispatch. Both commands
 preserve caller-owned transactions, including when dispatched with a
 `Connection`.
 
+Signal Start subscriptions are supported for single-process definitions.
 Signal names match exactly and case-sensitively within the tenant. Name and
 occurrence ID must be non-blank strings of at most 255 characters. The payload
 must be JSON serializable, including JSON null; non-finite numbers are rejected.
@@ -150,8 +153,9 @@ definition version policy, recovery, and payload examples, and the
 
 ### `ImportBpmnProcessDefinitionCommand`
 
-Stores BPMN XML, and optional DMN XML, as a process definition. Validation
-runs before anything is stored.
+Stores BPMN XML, and optional DMN XML, as a process definition. One definition
+can represent a BPMN collaboration with two or more executable participants.
+Validation runs before anything is stored.
 
 It takes the following fields:
 
@@ -173,6 +177,26 @@ It takes the following fields:
 Returns `BpmnProcessDefinitionModel`. Importing a definition with a timer start
 event also creates or refreshes its scheduler jobs.
 
+For collaborations, `bpmn_identifier` on the returned definition is the
+collaboration's XML ID. The command's `bpmn_identifier` remains the stable
+model identifier used for authorization. `source_bpmn_xml` retains the
+submitted XML. `collaboration_metadata` is a dictionary with:
+
+- `id` and `executable_process_ids`, in participant order.
+- `participants`, with `id`, `name`, `process_ref`, and `is_executable`.
+  A black-box participant has a null `process_ref`.
+- `message_flows`, with `id`, `name`, `source_ref`, `target_ref`, optional
+  `message_ref`, and resolved `source_process_id` and `target_process_id`.
+  Routable flows also have `routed_message_ref` and a `target_kind` of
+  `start` or `catch`. Descriptive flows have null routing fields.
+
+Each version is identified by the tenant and the SHA-256 of its BPMN source.
+An identical import for the same model reuses that version and its timer
+schedule. A supplied digest must match the source. Changing the BPMN source
+creates a new version. An existing collaboration version rejects conflicting
+model identifiers and DMN source. Single-process definitions return
+`None` for `collaboration_metadata`.
+
 Two `properties_json` keys decide who can work on the definition's human
 tasks:
 
@@ -193,8 +217,9 @@ stored properties are kept and validated against the imported BPMN.
 
 Raises:
 
-- `ValidationError` if the BPMN or DMN is malformed, or the BPMN doesn't
-  contain exactly one executable process.
+- `ValidationError` if the BPMN or DMN is malformed, the file lacks a single
+  executable process or a supported collaboration, or a collaboration contains
+  invalid references or conflicts with an existing version.
 - `ValidationError` if `initiator_lanes` is not a list, contains an entry
   that isn't a non-empty string, names a lane that doesn't exist in the BPMN,
   or names a lane that also has a key in `lane_owners`. The message lists the
@@ -218,11 +243,20 @@ It takes the following fields:
 | `summary` | `str \| None` | No | |
 | `process_version` | `int` | No | Default `1` |
 | `started_at` | `datetime \| None` | No | |
-| `bpmn_process_id` | `str \| None` | No | Required only when the definition has several executable processes |
+| `bpmn_process_id` | `str \| None` | No | Required for a collaboration. Use the participant's process ID from `executable_process_ids` |
 | `call_activity_resolver` | `CallActivityResolver \| None` | No | Resolves external `calledElement` references in the starting tenant |
+| `collaboration_correlation_key` | `str \| None` | No | For a collaboration only. An exact, case-sensitive key of 1 to 255 characters containing at least one non-whitespace character. The library generates a unique key when omitted |
 
 Returns `ProcessInstanceModel`, already advanced to its first wait state or to
 completion.
+
+Explicit collaboration starts use the participant's none start event. Timer
+and message starts use the specific modeled start event through the scheduler.
+Use the same key on related instances to enable matching intermediate message
+catches. Read the assigned key from
+`ProcessInstanceModel.collaboration_correlation_key`. A message-started
+instance inherits that key and the sending instance's tenant initiator.
+Scheduler-started participants resolve call activities from the deployed XML.
 
 Raises:
 
@@ -230,7 +264,9 @@ Raises:
 - `AuthorizationError` if the initiator is outside the tenant or lacks the
   permission.
 - `ValidationError` if the stored definition is unusable or the process ID is
-  ambiguous.
+  ambiguous, or the collaboration correlation key is invalid.
+- `NotFoundError` if a selected process ID is outside the executable participants.
+- `InvalidStateError` if a collaboration participant has no matching explicit start.
 - `ServiceTaskExecutionError` if the workflow reaches a service task and the
   connector fails.
 - `CallActivityResolutionError` if a called process is missing, ambiguous, or
@@ -285,6 +321,9 @@ modeled.
 ### `InitializeProcessInstanceWorkflowCommand`
 
 Starts the workflow runtime for a process instance that already exists.
+Start collaboration participants with
+`InitializeProcessInstanceFromDefinitionCommand` so execution and routing
+share a stored version.
 
 It takes the following fields:
 
@@ -333,7 +372,8 @@ Returns `ProcessInstanceModel`.
 
 Raises:
 
-- `NotFoundError` if the initiator doesn't exist.
+- `NotFoundError` if the initiator doesn't exist or the BPMN definition or
+  process cannot be found in the requested tenant.
 - `AuthorizationError` if the initiator isn't in the tenant.
 
 ### `ClaimTaskCommand`
@@ -372,7 +412,7 @@ It takes the following fields:
 | `work_item_id` | `int` | Yes | |
 | `user_id` | `int` | Yes | |
 | `completed_at` | `datetime \| None` | No | |
-| `task_payload` | `dict[str, str] \| None` | No | Stored as process metadata, one row per key, with values as strings |
+| `task_payload` | `dict[str, str] \| None` | No | Stored as process metadata, one row per key, with values as strings. For a task inside a multi-instance iteration, applied to that iteration only and not stored. |
 
 Returns `WorkItemModel`.
 
@@ -559,8 +599,8 @@ api.run_due_scheduler_jobs(
 )
 ```
 
-Finds due scheduler jobs and runs them: timer starts, intermediate and
-boundary timers, recurring timer starts, and scheduled retries. It's a service
+Runs due timer starts, intermediate and boundary timers, recurring timer
+starts, scheduled retries, and collaboration messages. It's a service
 function, not a command, because your application calls it from a worker loop,
 not on behalf of a user. It takes the following parameters:
 
@@ -572,7 +612,8 @@ not on behalf of a user. It takes the following parameters:
 | `worker_id` | A non-blank ID stored on each job while this call has it claimed |
 | `tenant_id` | Runs only this tenant's jobs |
 
-Returns an `int`: the number of due jobs processed.
+Returns the number of due jobs processed. A collaboration message deferred
+while it waits for a unique recipient is counted when delivered.
 
 Raises:
 
@@ -656,7 +697,7 @@ the workflow runtime:
 
 | Function | Description |
 |---|---|
-| `advance_process_instance_workflow(session, *, tenant_id, process_instance_id, completed_task_guid, completed_at=None)` | Restores an initialized workflow, completes the given runtime task GUID, advances the process, and saves the new state |
+| `advance_process_instance_workflow(session, *, tenant_id, process_instance_id, completed_task_guid, completed_at=None, task_payload=None)` | Restores an initialized workflow, records `task_payload` (inside a multi-instance iteration, applies it to that iteration only), completes the given runtime task GUID, advances the process, and saves the new state |
 | `validate_compensation_bpmn(source_bpmn_xml)` | Checks compensation bindings and Transaction Cancel Event placement in BPMN XML (`str` or `bytes`). Raises `ValidationError` for unsupported forms. Imports also check executable specs and optional DMN. |
 | `resolve_lane_assignment_id(lane_name, tenant_id=None)` | Converts a lane name into the stable positive integer that m8flow uses as a lane group ID. With `tenant_id`, the group is qualified as `<tenant_id>:<lane_name>`, so equal lane names in different tenants never share a group. |
 | `assign_pending_tasks_for_user(session, *, tenant_id, user_id)` | Adds the user, labelled `lane_assignment`, as a potential owner of every incomplete work item in the tenant whose lane group they currently belong to and that they don't already own, for example after you sync directory membership. Returns only the newly assigned work items, ordered by ID, or `[]` when there is nothing to add. It doesn't claim, change task status, consult `lane_owners`, or touch work items without a lane group. Raises `NotFoundError` if the user doesn't exist and `AuthorizationError` if the user isn't in the tenant; nothing is written in either case. |

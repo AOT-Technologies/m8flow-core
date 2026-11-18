@@ -15,6 +15,10 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
 - BPMN Transaction cancellation stops active work and timers, runs recorded
   compensation handlers, and follows the attached Cancel Boundary Event once.
   `validate_compensation_bpmn` lets hosts check supported forms before saving.
+- BPMN collaborations deploy multiple executable pools from one file. Modeled
+  messages start or resume a participant through the tenant-scoped scheduler.
+  Run `alembic upgrade head` before starting the updated runtime
+  and scheduler pollers.
 - Durable tenant-scoped BPMN signal publication, subscription indexing, and
   idempotent delivery receipts. Intermediate/end throws broadcast to waiting
   intermediate catches, boundary events, event subprocesses, and Signal Start
@@ -49,6 +53,12 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
 - A runtime test for sequential and parallel multi-instance script tasks. They already ran through SpiffWorkflow; the BPMN support
   reference, limitations page, and README no longer list them, or call
   activities, as unsupported.
+- Alembic revision `m8f_merge_runtime` joins the collaboration and compensation
+  migration branches without changing either history.
+- Alembic revision `m8f_instance_definition_tenant` prevents instances from
+  referencing a BPMN definition owned by another tenant.
+- Alembic revision `m8f_instance_process_tenant` prevents instances from
+  referencing a BPMN process owned by another tenant.
 - Task code can raise a BPMN error that an error boundary event catches, for
   models migrated from Camunda 7 (M8F-675). Scripts call
   `raise BpmnError("CODE")`. Connectors raise
@@ -57,8 +67,18 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
   nearest matching boundary cancels the task and takes over. Without a
   matching boundary the task fails as before, and other Python exceptions are
   never caught as BPMN errors.
+- Multi-instance runtime values. Each iteration sees `loopCounter` (zero-based,
+  as in Camunda 7), `nrOfInstances`, `nrOfActiveInstances` and
+  `nrOfCompletedInstances`, and a `completionCondition` can use them.
 
 ### Changed
+
+- SQLite engines created with `m8flow_core.db.build_engine()` enforce foreign
+  keys on every connection. Process instance creation reports missing and
+  out-of-tenant BPMN references as `NotFoundError`.
+
+- Imports now reject BPMN collaborations with multiple pools but fewer than
+  two distinct executable participant processes.
 
 - Resolved CodeQL code-scanning alerts without changing the public API.
   `resume_process_instance` and `retry_process_instance` moved from
@@ -70,9 +90,20 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
   imported under `TYPE_CHECKING`, so static analysis can see them.
 - SpiffWorkflow 3.2.0 is now the minimum supported version, up from 3.1.2.
   Earlier versions never set up event subprocesses.
+- Multi-instance iterations keep their input item, output item and runtime
+  values to themselves; without an output mapping, their other variables still
+  flow back. Parallel output collections now list results in input order, and
+  an activity that runs again starts a new output collection instead of failing.
+- `advance_process_instance_workflow` takes an optional `task_payload`, and
+  `CompleteTaskCommand` passes it. A human task inside a multi-instance
+  iteration applies its payload to that iteration only instead of recording it
+  as process instance metadata, so one iteration's form values can't reach
+  another. Other tasks record their payload as before.
 
 ### Fixed
 
+- A `loopCardinality` multi-instance loop no longer fails with `NameError` when
+  its output collection already exists (a SpiffWorkflow 3.2.0 bug).
 - Added the compensation journal tables to the sample app's migration chain,
   so tenant realignment can run against databases migrated by the app.
 - Removed import cycles in compensation persistence and process termination.
@@ -82,7 +113,6 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
   facade's exports explicit. Workflow serializer configuration now uses the
   shared version constant, addressing the remaining CodeQL unused-symbol
   alerts without changing the public API or serialized format.
-
 - Removed cyclic imports introduced by signal publication. Engine construction,
   workflow-state persistence, and signal indexing now form lower-level internal
   modules; Spiff signal throws use an injected publisher callback. Public API
@@ -91,20 +121,32 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
   composite parent indexes. The app now upgrades existing databases and adopts
   existing signal tables without changing the host's Alembic version state.
   This fixes sample-app startup and CI failures on missing signal tables.
-
-
 - Unmatched signal throws are covered by regressions: publication succeeds
   without a catcher and downstream execution continues (BPMN-03). Signal end
   events now publish instead of silently behaving as none end events.
 - Non-interrupting signal boundaries re-arm for repeated occurrences;
   interrupting signal event subprocesses cancel competing scope execution.
   Tasks in signal-triggered subprocesses are persisted and materialized.
-
-
 - A timer start event inside an event subprocess is now scheduled as a timer
   of the running instance. Before, importing the definition scheduled it as a
   process timer start, which started extra instances, and the running instance
   fired it only when another timer woke it. Needs SpiffWorkflow 3.2.0 or later.
+
+- Error and escalation events now go to the nearest matching catcher (M8F-665).
+  The walk starts in the thrower's scope and moves out one scope at a time. In
+  each scope its event subprocesses come first, then boundary events on the
+  activity that hosts the scope. Before, SpiffWorkflow broadcast the event to
+  every matching catcher in the process, so with matching boundaries at two
+  levels the outer one won.
+- Event subprocesses with an error or escalation start event now run only when
+  a matching event is thrown (M8F-665). SpiffWorkflow parsed those start events
+  as none starts, so the handler ran every time its scope started and caught
+  nothing. The handler starts from the thrower's data. An interrupting one,
+  the BPMN default, cancels the rest of its scope, including waiting user
+  tasks; one with `isInterrupting="false"` runs beside the main path.
+- An escalation that nothing catches is ignored and the flow continues, and an
+  error end event that nothing catches ends its path like a plain end event.
+  Neither puts the instance into an error state (M8F-665).
 
 ### Security
 
@@ -113,7 +155,6 @@ lists its changes under **Added**, **Changed**, **Deprecated**, **Removed**,
   `pydantic-settings` 2.16.2 in `uv.lock`; `Werkzeug` 3.1.9 and `Mako` 1.4.3
   in `sample_app/uv.lock`. The declared dependency ranges are unchanged.
 
-## [1.0.0] - 2026-10-22
 ## [1.0.0] - 2026-11-11
 
 The first stable release, and the first under the name m8flow-core. Versions

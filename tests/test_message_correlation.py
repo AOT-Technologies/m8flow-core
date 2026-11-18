@@ -13,7 +13,11 @@ from sqlalchemy.orm import Session
 
 from m8flow_core import api
 from m8flow_core.message_upgrade import reindex_message_subscriptions
-from m8flow_core.models import MessageSubscriptionModel, ProcessInstanceModel
+from m8flow_core.models import (
+    MessageDeliveryReceiptModel,
+    MessageSubscriptionModel,
+    ProcessInstanceModel,
+)
 from m8flow_core.services.workflow_engine import _restore_workflow
 from m8flow_core.services.workflow_state import _persist_workflow_recovery_state
 from test_signal_publication import deploy, seed_actor
@@ -51,6 +55,7 @@ def message(actor, delivery_id, case_number, region="west", **kwargs):
 
 def test_message_selects_exact_composite_key_after_restart(engine, session, actor):
     definition = deploy(session, actor, BPMN)
+    assert definition.collaboration_metadata is None
     west = start(session, actor, definition, 17)
     east = start(session, actor, definition, 17, region="east")
     west_id, east_id = west.id, east.id
@@ -125,6 +130,40 @@ def test_lifecycle_and_tenant_isolation(session, actor):
     )
     with pytest.raises(api.NotFoundError):
         api.execute_command(session, message(actor, "terminated", 18))
+
+
+def test_correlation_rejects_nonmember_without_consuming_matching_wait(session, actor):
+    target_actor = seed_actor(session, "target")
+    definition = deploy(session, target_actor, BPMN)
+    instance = start(session, target_actor, definition, 17)
+    state_before = instance.workflow_state_json
+    assert instance.status == "waiting"
+    request = message(
+        target_actor,
+        "cross-tenant",
+        17,
+        process_instance_id=instance.id,
+    )
+
+    class AllowPolicy:
+        def authorize(self, session, request):
+            return api.AuthorizationDecision(True)
+
+    # A permissive command policy must not bypass tenant membership.
+    with (
+        api.authorization_policy_scope(AllowPolicy()),
+        pytest.raises(api.AuthorizationError, match="does not belong to tenant"),
+    ):
+        api.execute_command(session, replace(request, user_id=actor[1]))
+
+    assert session.scalar(select(MessageDeliveryReceiptModel)) is None
+    session.refresh(instance)
+    assert instance.status == "waiting"
+    assert instance.workflow_state_json == state_before
+
+    receipt = api.execute_command(session, request)
+    assert receipt.process_instance_id == instance.id
+    assert instance.status == "complete"
 
 
 def test_connection_rollback_restores_waiting_subscription(engine, session, actor):

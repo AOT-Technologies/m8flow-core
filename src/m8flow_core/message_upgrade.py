@@ -47,6 +47,9 @@ def reindex_message_subscriptions(session: Session, tenant_id: str) -> int:
     ).all()
     count = 0
     for instance in instances:
+        definition = instance.bpmn_process_definition
+        if definition is None or definition.collaboration_metadata is not None:
+            continue
         lock_event_instance(session, instance)
         state = instance.workflow_state_json
         definition = instance.bpmn_process_definition

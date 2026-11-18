@@ -110,18 +110,31 @@ Missing:
 
 ## Messaging and correlation
 
+The library supports direct modeled Message Flows between top-level Message
+Events in executable pools of the same collaboration version. Delivery uses
+the scheduler. Intermediate catches use a caller-supplied instance key.
+
 The library supports tenant-scoped BPMN signal publication. Hosts run one
 signal delivery loop per tenant; multi-worker signal delivery and external
 broker delivery are not supported. See [Publish signals](../how-to/publish-signals.md).
-BPMN intermediate catches support synchronous external delivery by a modeled
-correlation key. See [Correlate external BPMN messages](../how-to/correlate-messages.md).
+
+In single-process definitions, BPMN intermediate catches support synchronous
+external delivery by a modeled correlation key. See
+[Correlate external BPMN messages](../how-to/correlate-messages.md).
 
 Missing:
 
-- **Message start events**, which start a process from an inbound message such
-  as `invoice.received` instead of an explicit start command.
-- **Message throws, boundaries, and event-subprocess starts**.
-- **Buffered delivery** to a catch that starts waiting after the message arrives.
+- **Signal starts for collaboration participants**. Signal starts are supported
+  for single-process definitions.
+- **Model-defined payload mappings for cross-pool flows**. These flows use
+  the caller-supplied instance key.
+- **Other executable endpoints**, such as send and receive tasks, message
+  boundary events, message event subprocesses, and cross-pool messages to
+  events inside subprocesses.
+- **External message starts** and **buffered external delivery** to catches
+  that only start waiting after the message arrives.
+- **Webhook and event-bus transport**. The host calls the core API to
+  deliver an external message.
 - **Camunda business-key and REST compatibility**.
 - **Outbound delivery** of thrown messages and signals to email, Kafka, or
   other subscribers.
@@ -130,24 +143,24 @@ Missing:
 
 Call activities are supported through the host-supplied resolver described in
 the [API reference](api.md#initializeprocessinstancefromdefinitioncommand).
-Sequential and parallel multi-instance script tasks are covered too; see
-[BPMN support](bpmn-support.md#supported-elements).
+Sequential and parallel multi-instance activities, including user tasks, are
+covered too; see [BPMN support](bpmn-support.md#supported-elements).
 The following BPMN features aren't tested in the library:
 
 - **Event subprocesses**, triggered by events inside a running parent process,
-  often for cancellation or exception handling. Non-interrupting timer and
-  interrupting/non-interrupting signal event subprocesses are covered.
+  often for cancellation or exception handling. Non-interrupting timer,
+  interrupting/non-interrupting signal, and error and escalation event
+  subprocesses are covered; message and conditional ones aren't.
 - **Advanced compensation combinations.** Boundary handlers and scoped
   throws and end events are supported, as is Transaction cancellation.
   Compensation models that require event subprocesses, loops, multi-instance
   activities, call activities, nested Transactions inside a cancellable
   Transaction, or automatic compensation from BPMN errors are rejected. See
   [Run compensation handlers](../how-to/run-compensation.md).
-- **Error boundary events for modelled errors, and escalation boundary
-  events.** An error that task code raises, such as a script's
-  `raise BpmnError("INSUFFICIENT_FUNDS")` or a connector's coded failure, is
-  caught by a matching error boundary. An error thrown by an error end event
-  isn't routed yet, and error event subprocesses don't catch either kind.
+- **Errors raised by task code, in event subprocesses.** A script's
+  `raise BpmnError("INSUFFICIENT_FUNDS")` or a connector's coded failure is
+  caught only by a matching error boundary. Error event subprocesses catch
+  errors thrown by the model, such as by an error end event, but not these.
 - **Other non-interrupting events**, beyond the tested timer and signal forms.
 
 ## Operations and observability

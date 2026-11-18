@@ -1,8 +1,10 @@
 # Correlate external BPMN messages
 
-Model an Intermediate Message Catch Event with a `messageRef` to a named
-BPMN message. Declare a `correlationKey` in the process's collaboration and
-reference its properties with `correlationPropertyRef`. Bind every property
+In a single-process definition, model an Intermediate Message Catch Event with
+a `messageRef` to a named BPMN message. Declare a `correlationKey` in the
+process's collaboration and reference its properties with
+`correlationPropertyRef`. A black-box pool may represent the external sender.
+Bind every property
 to process context through `correlationSubscription` and
 `correlationPropertyBinding`. Declare the matching incoming `messagePath`
 on each property's retrieval expression for that message.

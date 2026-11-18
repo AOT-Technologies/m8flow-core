@@ -13,11 +13,15 @@ the library doesn't guarantee them.
 
 A definition must meet the following rules:
 
-- A BPMN file must contain exactly one executable process, or you must pass
-  `bpmn_process_id` to choose one when you start an instance.
+- Import one executable process or one collaboration with two or more
+  distinct executable participants. Pass `bpmn_process_id` to start an
+  executable participant from a collaboration.
 - A definition can include one DMN file next to the BPMN, imported with
   `source_dmn_xml`.
 - Collaborations with one participant and its lane set are supported.
+- A cross-pool collaboration requires at least two executable participants.
+  A single executable process can also use black-box pools to model external
+  senders when its message catches declare BPMN correlation keys.
 
 ## Supported elements
 
@@ -27,11 +31,13 @@ The following elements are supported:
 |---|---|
 | Start event (none) | |
 | End event (none) | |
-| Message intermediate catch | Receives one external delivery using a complete BPMN correlation key. See [Correlate external BPMN messages](../how-to/correlate-messages.md). |
+| Message Start Event | Starts a participant through a direct, modeled cross-pool Message Flow. |
+| Intermediate Message Catch Event | Waits for a modeled cross-pool message or, in a single-process definition, [an external message](../how-to/correlate-messages.md). Each uses its own correlation key. |
+| Intermediate Message Throw Event and Message End Event | Queue a scheduler job for each modeled route to a supported event. |
 | Signal intermediate/end throw | Publishes successfully with zero or more listeners; local delivery is immediate |
 | Signal intermediate catch | Receives matching publications while waiting |
 | Signal boundary event | Interrupting and repeatable non-interrupting handlers |
-| Signal start event | Creates one instance per matching active start subscription and occurrence |
+| Signal start event | Creates one instance per matching active start subscription and occurrence in a single-process definition |
 | Signal event subprocess | Interrupting and repeatable non-interrupting starts, including nested scopes and human tasks |
 | Sequence flow with condition expression | Python expressions evaluated against task data |
 | User task | Becomes a human task that users claim and complete |
@@ -50,14 +56,22 @@ The following elements are supported:
 | Interrupting timer boundary event | `timeDate` or `timeDuration`, such as `PT2M`. Cancels the attached task and continues on the timeout path. |
 | Error boundary event, for errors raised by task code | A script runs `raise BpmnError("CODE")`, or `raise BpmnError("CODE", "message")`, like Camunda's `BpmnError`. A connector raises `ServiceTaskExecutionError(..., error_code="CODE")`; the connector proxy client sets `error_code` from the proxy's reply, such as `HttpError404`. The nearest waiting error boundary with that code, or with no code, catches the error, cancels the task, and continues on the boundary path, passing up from a sub-process or multi-instance activity if needed. Only a boundary attached to the failing activity, or to an activity it runs inside, can catch; a boundary on an activity in another parallel branch never does. The `spiffworkflow:variableName` extension on the `bpmn:error` receives `{"code", "message"}`. With no matching boundary, the task fails as before. Any other Python exception is never caught as a BPMN error. |
 | Call activity | Resolves `calledElement` through the host-supplied tenant-aware resolver. The child runs in the parent snapshot and parent execution resumes on child completion. See the [resolver contract](api.md#initializeprocessinstancefromdefinitioncommand). |
-| Multi-instance activity | Sequential or parallel, once per item of the collection in `loopDataInputRef` (bound to `inputDataItem`) or `loopCardinality` times. Map results with `loopDataOutputRef` and `outputDataItem`; parallel results aren't ordered. Tested with script tasks; multi-instance user tasks aren't tested yet. |
+| Multi-instance activity | Sequential or parallel, once per item of the collection in `loopDataInputRef` (bound to `inputDataItem`) or `loopCardinality` times. Each iteration sees `loopCounter` (zero-based), `nrOfInstances`, `nrOfActiveInstances` and `nrOfCompletedInstances`; those names and the input and output items stay in the iteration. `loopDataOutputRef` collects each `outputDataItem` in input order, and a later activation starts a new collection. `completionCondition` is evaluated after each iteration and, in a parallel loop, cancels the iterations still running. |
 | Non-interrupting timer event subprocess | A `subProcess` with `triggeredByEvent="true"` and a timer start event with `isInterrupting="false"`. The scheduler fires it inside the running instance, and the main path keeps going. Needs SpiffWorkflow 3.2.0 or later. Human tasks inside it don't become work items yet. |
+| Error and escalation events | Error end events and escalation throw and end events, caught by boundary events or by event subprocesses with an error or escalation start event. The nearest matching catcher in the enclosing scopes handles the event; a catcher with no code catches any event of its type. An interrupting event subprocess cancels the rest of its scope; one with `isInterrupting="false"` runs beside the main path. An uncaught escalation is ignored, and an uncaught error end event ends its path. Errors raised by task code are caught only by error boundaries, as described for them above. |
 
 Signals need a host-run delivery loop for recipients outside the throwing
 instance. See [Publish and deliver BPMN signals](../how-to/publish-signals.md).
 
 Timers need a scheduler loop. See
 [Run timers and scheduled retries](../how-to/run-timers-and-retries.md).
+
+Collaboration message delivery also uses the scheduler. Draw the flow directly
+between top-level Message Events in different executable pools. Give each
+event one inline `messageEventDefinition` with the same `messageRef`.
+A flow's optional `messageRef` must agree with
+the events. Other valid flow shapes, including flows attached to a pool
+boundary, are preserved as metadata.
 
 ## Task assignment
 
@@ -102,10 +116,12 @@ names that exist in the BPMN, and none of them may also be a key in
 
 The following elements and behaviors aren't covered:
 
-- Message starts, throws, boundary events, and message event subprocesses
-- Event subprocesses, other than the documented timer and signal forms
-- Error boundary events for errors thrown by error end events, and escalation
-  boundary events
+- Message routing beyond the supported collaboration event pairs
+- External message delivery to starts, boundary events, and event subprocesses
+- Signal starts for collaboration participants
+- Event subprocesses, other than the documented timer, signal, error and
+  escalation forms
+- Error event subprocesses catching errors raised by task code
 - Non-interrupting boundary events other than signals
 - Compound Multiple/Parallel Multiple events and event-based gateways
 - Asynchronous service tasks that complete through a callback
