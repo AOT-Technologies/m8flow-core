@@ -677,7 +677,7 @@ def _next_timer_start_task_payload_after_fire(
         )
 
     cycles_value = current_event_value.get("cycles")
-    if cycles_value is None:
+    if cycles_value is None or (type(cycles_value) is int and cycles_value < 0):
         remaining_cycles: int | None = None
     elif type(cycles_value) is int and cycles_value > 1:
         remaining_cycles = cycles_value - 1

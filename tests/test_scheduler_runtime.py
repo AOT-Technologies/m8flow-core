@@ -930,6 +930,65 @@ def test_run_due_scheduler_jobs_reschedules_recurring_timer_start_job(
     }
 
 
+def test_unbounded_timer_start_cycle_keeps_rescheduling_after_multiple_fires(
+    session: Session,
+) -> None:
+    tenant, user = _seed_timer_actor(session)
+    source = TIMER_START_CYCLE_BPMN.replace("'R3/PT5M'", "'R/PT5M'")
+    _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-unbounded-cycle",
+        bpmn_name="Timer Start Unbounded Cycle",
+        source_bpmn_xml=source,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_task = dict(timer_job.payload_json["timer_task"])
+    event_value = dict(timer_task["event_value"])
+    assert event_value["cycles"] == -1
+    event_value["next"] = "1970-01-01T00:00:00+00:00"
+    timer_task["event_value"] = event_value
+    timer_task["run_at_in_seconds"] = 0
+    timer_job.payload_json = {
+        **timer_job.payload_json,
+        "timer_task": timer_task,
+    }
+    timer_job.run_at = datetime.fromtimestamp(0, UTC)
+    session.commit()
+
+    for occurrence_number, now_in_seconds in enumerate((0, 300, 600), start=1):
+        assert api.run_due_scheduler_jobs(
+            session,
+            now=datetime.fromtimestamp(now_in_seconds, UTC),
+            tenant_id=tenant.id,
+        ) == 1
+        session.commit()
+
+        timer_job = _load_scheduler_job(
+            session,
+            tenant_id=tenant.id,
+            job_type=SchedulerJobType.timer_start.value,
+        )
+        assert timer_job.run_at.timestamp() == now_in_seconds + 300
+        next_event_value = timer_job.payload_json["timer_task"]["event_value"]
+        assert next_event_value["next"] == datetime.fromtimestamp(
+            now_in_seconds + 300, UTC
+        ).isoformat()
+
+        assert api.run_due_scheduler_jobs(
+            session,
+            now=datetime.fromtimestamp(now_in_seconds, UTC),
+            tenant_id=tenant.id,
+        ) == 1
+        session.commit()
+        instances = api.execute_query(
+            session,
+            api.ListProcessInstancesQuery(tenant_id=tenant.id),
+        )
+        assert len(instances) == occurrence_number
+
+
 def test_recurring_timer_creates_later_occurrence_while_first_instance_waits(
     session: Session,
 ) -> None:
