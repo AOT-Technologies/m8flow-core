@@ -536,6 +536,12 @@ def _start_collaboration_participant(
             workflow=workflow,
             occurred_at=occurred_at,
         )
+    except (ServiceTaskExecutionError, CompensationExecutionError):
+        if not timer_start:
+            raise
+        # Keep the transition to error in this savepoint. Letting the failure
+        # escape would roll back the timer-created participant with the savepoint.
+        return process_instance
     except WorkflowTaskException as exc:
         if not timer_start:
             raise

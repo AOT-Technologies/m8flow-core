@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from m8flow_core import api
@@ -18,7 +18,7 @@ from m8flow_core.models.process_instance import (
     WORKFLOW_STATE_JSON_DATA_KEY,
     ProcessInstanceModel,
 )
-from m8flow_core.models.scheduler_job import SchedulerJobModel
+from m8flow_core.models.scheduler_job import SchedulerJobModel, SchedulerJobType
 from m8flow_core.models.task import TaskModel
 from m8flow_core.models.task_definition import TaskDefinitionModel
 from m8flow_core.models.tenant import M8flowTenantModel
@@ -1010,6 +1010,118 @@ def test_recurring_timer_creates_later_occurrence_while_first_instance_waits(
     )
 
 
+def test_overdue_timer_and_occurrences_both_make_progress(session: Session) -> None:
+    tenant, user = _seed_timer_actor(session)
+    _import_process_definition(
+        session,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        bpmn_identifier="timer-start-overdue-progress",
+        bpmn_name="Timer Start Overdue Progress",
+        source_bpmn_xml=TIMER_START_CYCLE_BPMN,
+    )
+    timer_job = _load_scheduler_job(session, tenant_id=tenant.id)
+    timer_job.run_at = datetime.fromtimestamp(0, UTC)
+    timer_job.payload_json = {
+        "scheduled_from": "test",
+        "timer_task": {
+            "event_definition_type": "TimeCycleEventDefinition",
+            "event_value": {
+                "cycles": 3,
+                "next": "1970-01-01T00:00:00+00:00",
+                "duration": 300.0,
+            },
+            "run_at_in_seconds": 0,
+            "task_guid": "timer-start-overdue-progress-guid",
+            "task_spec_name": "StartEvent_timer_cycle",
+            "task_spec_type": "StartEvent",
+        },
+    }
+    session.flush()
+
+    # Queue the first occurrence, then poll at t=600 with both it and the
+    # next cadence due. Repeated late polls must run occurrences and advance
+    # cadence rather than letting either class starve the other.
+    assert api.run_due_scheduler_jobs(
+        session, now=datetime.fromtimestamp(0, UTC), tenant_id=tenant.id
+    ) == 1
+    for _ in range(5):
+        assert api.run_due_scheduler_jobs(
+            session, now=datetime.fromtimestamp(600, UTC), tenant_id=tenant.id
+        ) == 1
+
+    instances = api.execute_query(
+        session,
+        api.ListProcessInstancesQuery(tenant_id=tenant.id),
+    )
+    assert len(instances) == 3
+    assert all(
+        instance.status == api.ProcessInstanceStatus.user_input_required
+        for instance in instances
+    )
+    assert session.scalar(
+        select(SchedulerJobModel.id).where(
+            SchedulerJobModel.m8f_tenant_id == tenant.id,
+            SchedulerJobModel.job_type == "timer_start",
+        )
+    ) is None
+    assert session.scalar(
+        select(SchedulerJobModel.id).where(
+            SchedulerJobModel.m8f_tenant_id == tenant.id,
+            SchedulerJobModel.job_type == "timer_start_occurrence",
+        )
+    ) is None
+
+
+def test_scheduler_claim_survives_database_truncating_lock_timestamp(
+    session: Session,
+) -> None:
+    if session.get_bind().dialect.name != "sqlite":
+        pytest.skip(
+            "The trigger simulates a database that truncates fractional seconds"
+        )
+    tenant, _ = _seed_timer_actor(session)
+    now = datetime.fromtimestamp(10.123456, UTC)
+    upsert_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_key="test|q:truncated-lock-time",
+        job_type=SchedulerJobType.process_retry,
+        run_at=datetime.fromtimestamp(10, UTC),
+        payload_json={},
+        updated_at=datetime.fromtimestamp(1, UTC),
+        created_at=datetime.fromtimestamp(1, UTC),
+    )
+    session.execute(
+        text(
+            """
+            CREATE TRIGGER truncate_scheduler_locked_at
+            AFTER UPDATE OF locked_at ON scheduler_job
+            WHEN NEW.locked_at IS NOT NULL
+            BEGIN
+              UPDATE scheduler_job
+              SET locked_at = substr(NEW.locked_at, 1, 19)
+              WHERE id = NEW.id;
+            END
+            """
+        )
+    )
+    session.flush()
+
+    claimed = scheduler_runtime.claim_due_scheduler_jobs(
+        session,
+        now=now,
+        worker_id="precision-worker",
+        tenant_id=tenant.id,
+    )
+
+    assert len(claimed) == 1
+    assert claimed[0].locked_by == "precision-worker"
+    persisted = session.get(SchedulerJobModel, claimed[0].id)
+    assert persisted is not None
+    assert persisted.locked_at == datetime.fromtimestamp(10, UTC)
+
+
 def test_failed_automatic_timer_task_does_not_block_later_cycles(
     session: Session,
 ) -> None:
@@ -1236,7 +1348,7 @@ def test_timer_start_occurrence_claim_and_poll_retry_is_idempotent(
     ) == 1
 
 
-def test_due_timer_start_is_claimed_separately_from_due_occurrence(
+def test_due_occurrence_is_claimed_separately_from_due_timer_start(
     session: Session,
 ) -> None:
     tenant, user = _seed_timer_actor(session)
@@ -1269,7 +1381,7 @@ def test_due_timer_start_is_claimed_separately_from_due_occurrence(
         tenant_id=tenant.id,
     )
 
-    assert [job.job_type for job in claimed_jobs] == ["timer_start"]
+    assert [job.job_type for job in claimed_jobs] == ["timer_start_occurrence"]
     occurrence_job = session.scalar(
         select(SchedulerJobModel).where(
             SchedulerJobModel.m8f_tenant_id == tenant.id,
@@ -1277,10 +1389,11 @@ def test_due_timer_start_is_claimed_separately_from_due_occurrence(
         )
     )
     assert occurrence_job is not None
-    assert occurrence_job.locked_by is None
+    assert occurrence_job.locked_by == "timer-cadence-worker"
+    assert timer_job.locked_by is None
 
 
-def test_due_timer_start_advances_without_processing_due_occurrence(
+def test_due_timer_and_occurrence_are_processed_in_separate_polls(
     session: Session,
 ) -> None:
     tenant, user = _seed_timer_actor(session)
@@ -1336,10 +1449,30 @@ def test_due_timer_start_advances_without_processing_due_occurrence(
         tenant_id=tenant.id,
     ) == 1
 
-    assert api.execute_query(
+    process_instances = api.execute_query(
         session,
         api.ListProcessInstancesQuery(tenant_id=tenant.id),
-    ) == []
+    )
+    assert len(process_instances) == 1
+    assert process_instances[0].status == api.ProcessInstanceStatus.user_input_required
+    assert _load_scheduler_job(
+        session,
+        tenant_id=tenant.id,
+        job_type="timer_start",
+    ).run_at.timestamp() == 300
+    assert session.scalar(
+        select(SchedulerJobModel.id).where(
+            SchedulerJobModel.m8f_tenant_id == tenant.id,
+            SchedulerJobModel.job_type == "timer_start_occurrence",
+        )
+    ) is None
+
+    assert api.run_due_scheduler_jobs(
+        session,
+        now=datetime.fromtimestamp(350, UTC),
+        tenant_id=tenant.id,
+    ) == 1
+
     assert _load_scheduler_job(
         session,
         tenant_id=tenant.id,
@@ -1355,7 +1488,7 @@ def test_due_timer_start_advances_without_processing_due_occurrence(
             .order_by(SchedulerJobModel.run_at)
         ).all()
     )
-    assert [job.run_at.timestamp() for job in occurrence_jobs] == [0, 300]
+    assert [job.run_at.timestamp() for job in occurrence_jobs] == [300]
     assert all(job.locked_by is None for job in occurrence_jobs)
 
 

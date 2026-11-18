@@ -62,15 +62,36 @@ def claim_due_scheduler_jobs(
     ]
     if tenant_id is not None:
         criteria.append(SchedulerJobModel.m8f_tenant_id == tenant_id)
-    due_timer_start = session.scalar(
-        select(SchedulerJobModel.id)
-        .where(*criteria, SchedulerJobModel.job_type == SchedulerJobType.timer_start)
-        .limit(1)
+    due_occurrence_ids = list(
+        session.scalars(
+            select(SchedulerJobModel.id)
+            .where(
+                *criteria,
+                SchedulerJobModel.job_type == SchedulerJobType.timer_start_occurrence,
+            )
+            .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
     )
-    if due_timer_start is not None:
-        # Commit cadence advancement before a later poll can block while
-        # starting an occurrence from the timer.
-        criteria.append(SchedulerJobModel.job_type == SchedulerJobType.timer_start)
+    if due_occurrence_ids:
+        # Keep occurrence execution in its own poll. A slow startup must not
+        # hold the cadence row, and another poll can advance cadence if every
+        # due occurrence is already locked by a worker.
+        criteria.append(
+            SchedulerJobModel.job_type == SchedulerJobType.timer_start_occurrence
+        )
+    else:
+        due_timer_start = session.scalar(
+            select(SchedulerJobModel.id)
+            .where(
+                *criteria,
+                SchedulerJobModel.job_type == SchedulerJobType.timer_start,
+            )
+            .limit(1)
+        )
+        if due_timer_start is not None:
+            criteria.append(SchedulerJobModel.job_type == SchedulerJobType.timer_start)
 
     due_jobs = list(
         session.scalars(
@@ -87,6 +108,7 @@ def claim_due_scheduler_jobs(
     definitions = {
         definition.id: definition
         for job in due_jobs
+        if job.job_type != SchedulerJobType.timer_start.value
         if (definition := job.bpmn_process_definition) is not None
         and definition.m8f_tenant_id == job.m8f_tenant_id
         and definition.collaboration_metadata is not None
@@ -149,7 +171,6 @@ def claim_due_scheduler_jobs(
             .where(
                 SchedulerJobModel.id.in_(candidate_ids),
                 SchedulerJobModel.locked_by == normalized_worker_id,
-                SchedulerJobModel.locked_at == occurred_at,
             )
             .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
             .execution_options(populate_existing=True)
