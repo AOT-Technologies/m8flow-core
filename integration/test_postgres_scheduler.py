@@ -11,12 +11,14 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from m8flow_core import api
+from m8flow_core.models.bpmn_process_definition import BpmnProcessDefinitionModel
 from m8flow_core.models.process_instance import ProcessInstanceStatus
 from m8flow_core.models.scheduler_job import SchedulerJobModel
 from m8flow_core.models.tenant import M8flowTenantModel
 from m8flow_core.models.user import UserModel
 from m8flow_core.services import scheduler_runtime
 from m8flow_core.services.authorization import ROLE_ADMIN, ensure_v1_role
+from m8flow_core.services.collaborations import lock_collaboration_definition
 
 _CYCLE_BPMN_PATH = (
     Path(__file__).resolve().parents[1]
@@ -352,3 +354,94 @@ def test_postgres_collaboration_timer_cadence_advances_while_start_is_blocked(
         )
         assert next_schedule is not None
         assert next_schedule.run_at.timestamp() == 600
+
+
+def test_postgres_collaboration_definition_lock_still_serializes_transitions(
+    postgres_engine: Engine,
+) -> None:
+    tenant_id = f"postgres-collaboration-lock-{uuid4().hex}"
+    with Session(bind=postgres_engine) as session:
+        tenant = M8flowTenantModel(
+            id=tenant_id,
+            name="Postgres Collaboration Lock Test",
+            slug=tenant_id,
+        )
+        user = UserModel(
+            username=f"collaboration-admin-{uuid4().hex}",
+            email=f"collaboration-admin-{uuid4().hex}@example.com",
+            service=f"http://localhost:7002/realms/{tenant_id}",
+            service_id=f"collaboration-admin-{uuid4().hex}",
+            display_name="Collaboration Admin",
+            created_at=_EPOCH,
+            updated_at=_EPOCH,
+        )
+        session.add_all([tenant, user])
+        session.flush()
+        ensure_v1_role(
+            session,
+            tenant_id=tenant.id,
+            role_name=ROLE_ADMIN,
+            user_ids=[user.id],
+        )
+        api.execute_command(
+            session,
+            api.ImportBpmnProcessDefinitionCommand(
+                tenant_id=tenant.id,
+                bpmn_identifier="postgres-collaboration-lock",
+                user_id=user.id,
+                bpmn_name="Postgres Collaboration Lock",
+                source_bpmn_xml=_COLLABORATION_BPMN_PATH.read_text(
+                    encoding="utf-8"
+                ),
+                created_at=_EPOCH,
+                updated_at=_EPOCH,
+            ),
+        )
+        definition_id = session.scalar(
+            select(BpmnProcessDefinitionModel.id).where(
+                BpmnProcessDefinitionModel.m8f_tenant_id == tenant_id
+            )
+        )
+        assert definition_id is not None
+        session.commit()
+
+    first_lock_acquired = Event()
+    release_first_lock = Event()
+    second_lock_attempted = Event()
+    second_lock_acquired = Event()
+
+    def hold_first_lock() -> None:
+        with Session(bind=postgres_engine) as session:
+            definition = session.get(
+                BpmnProcessDefinitionModel, definition_id
+            )
+            assert definition is not None
+            lock_collaboration_definition(session, definition)
+            first_lock_acquired.set()
+            if not release_first_lock.wait(timeout=20):
+                raise TimeoutError("Timed out waiting to release collaboration lock")
+            session.commit()
+
+    def acquire_second_lock() -> None:
+        with Session(bind=postgres_engine) as session:
+            definition = session.get(
+                BpmnProcessDefinitionModel, definition_id
+            )
+            assert definition is not None
+            second_lock_attempted.set()
+            lock_collaboration_definition(session, definition)
+            second_lock_acquired.set()
+            session.commit()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_worker = executor.submit(hold_first_lock)
+        assert first_lock_acquired.wait(timeout=10)
+        second_worker = executor.submit(acquire_second_lock)
+        assert second_lock_attempted.wait(timeout=10)
+        try:
+            assert not second_lock_acquired.wait(timeout=0.5)
+        finally:
+            release_first_lock.set()
+        first_worker.result(timeout=20)
+        second_worker.result(timeout=20)
+    assert second_lock_acquired.is_set()
