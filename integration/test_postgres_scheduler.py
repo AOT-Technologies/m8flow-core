@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -104,12 +109,15 @@ def test_postgres_overlapping_workers_advance_timer_cadence_once(
         session.commit()
 
     with Session(bind=postgres_engine) as session:
-        assert api.run_due_scheduler_jobs(
-            session,
-            now=_EPOCH,
-            tenant_id=tenant_id,
-            worker_id="timer-scheduler",
-        ) == 1
+        assert (
+            api.run_due_scheduler_jobs(
+                session,
+                now=_EPOCH,
+                tenant_id=tenant_id,
+                worker_id="timer-scheduler",
+            )
+            == 1
+        )
         session.commit()
 
     original_initialize = (
@@ -161,10 +169,13 @@ def test_postgres_overlapping_workers_advance_timer_cadence_once(
             )
             assert second_worker.result(timeout=10) == 1
             with Session(bind=postgres_engine) as session:
-                assert api.execute_query(
-                    session,
-                    api.ListProcessInstancesQuery(tenant_id=tenant_id),
-                ) == []
+                assert (
+                    api.execute_query(
+                        session,
+                        api.ListProcessInstancesQuery(tenant_id=tenant_id),
+                    )
+                    == []
+                )
                 next_schedule = session.scalar(
                     select(SchedulerJobModel).where(
                         SchedulerJobModel.m8f_tenant_id == tenant_id,
@@ -177,15 +188,9 @@ def test_postgres_overlapping_workers_advance_timer_cadence_once(
             release_initialization.set()
         assert first_worker.result(timeout=30) == 1
 
-    assert run_worker(
-        "timer-worker-three", datetime.fromtimestamp(650, UTC)
-    ) == 1
-    assert run_worker(
-        "timer-worker-four", datetime.fromtimestamp(650, UTC)
-    ) == 1
-    assert run_worker(
-        "timer-worker-five", datetime.fromtimestamp(650, UTC)
-    ) == 1
+    assert run_worker("timer-worker-three", datetime.fromtimestamp(650, UTC)) == 1
+    assert run_worker("timer-worker-four", datetime.fromtimestamp(650, UTC)) == 1
+    assert run_worker("timer-worker-five", datetime.fromtimestamp(650, UTC)) == 1
     with Session(bind=postgres_engine) as session:
         process_instances = api.execute_query(
             session,
@@ -193,8 +198,7 @@ def test_postgres_overlapping_workers_advance_timer_cadence_once(
         )
         assert len(process_instances) == 3
         assert all(
-            process_instance.status
-            == ProcessInstanceStatus.user_input_required.value
+            process_instance.status == ProcessInstanceStatus.user_input_required.value
             for process_instance in process_instances
         )
         next_schedule = session.scalar(
@@ -235,14 +239,14 @@ def test_postgres_collaboration_timer_cadence_advances_while_start_is_blocked(
         )
         bpmn_xml = _COLLABORATION_BPMN_PATH.read_text(encoding="utf-8").replace(
             '<bpmn:startEvent id="OrderStart"/>',
-            '''<bpmn:startEvent id="OrderStart"/>
+            """<bpmn:startEvent id="OrderStart"/>
             <bpmn:startEvent id="OrderTimer">
               <bpmn:timerEventDefinition>
                 <bpmn:timeCycle>R3/PT5M</bpmn:timeCycle>
               </bpmn:timerEventDefinition>
             </bpmn:startEvent>
             <bpmn:sequenceFlow id="OrderTimerFlow" sourceRef="OrderTimer"
-                               targetRef="OrderEnd"/>''',
+                               targetRef="OrderEnd"/>""",
         )
         api.execute_command(
             session,
@@ -283,12 +287,15 @@ def test_postgres_collaboration_timer_cadence_advances_while_start_is_blocked(
         session.commit()
 
     with Session(bind=postgres_engine) as session:
-        assert api.run_due_scheduler_jobs(
-            session,
-            now=datetime.fromtimestamp(50, UTC),
-            tenant_id=tenant_id,
-            worker_id="collaboration-cadence-seed",
-        ) == 1
+        assert (
+            api.run_due_scheduler_jobs(
+                session,
+                now=datetime.fromtimestamp(50, UTC),
+                tenant_id=tenant_id,
+                worker_id="collaboration-cadence-seed",
+            )
+            == 1
+        )
         session.commit()
 
     from m8flow_core.services import workflow_runtime
@@ -390,9 +397,7 @@ def test_postgres_collaboration_definition_lock_still_serializes_transitions(
                 bpmn_identifier="postgres-collaboration-lock",
                 user_id=user.id,
                 bpmn_name="Postgres Collaboration Lock",
-                source_bpmn_xml=_COLLABORATION_BPMN_PATH.read_text(
-                    encoding="utf-8"
-                ),
+                source_bpmn_xml=_COLLABORATION_BPMN_PATH.read_text(encoding="utf-8"),
                 created_at=_EPOCH,
                 updated_at=_EPOCH,
             ),
@@ -412,9 +417,7 @@ def test_postgres_collaboration_definition_lock_still_serializes_transitions(
 
     def hold_first_lock() -> None:
         with Session(bind=postgres_engine) as session:
-            definition = session.get(
-                BpmnProcessDefinitionModel, definition_id
-            )
+            definition = session.get(BpmnProcessDefinitionModel, definition_id)
             assert definition is not None
             lock_collaboration_definition(session, definition)
             first_lock_acquired.set()
@@ -424,9 +427,7 @@ def test_postgres_collaboration_definition_lock_still_serializes_transitions(
 
     def acquire_second_lock() -> None:
         with Session(bind=postgres_engine) as session:
-            definition = session.get(
-                BpmnProcessDefinitionModel, definition_id
-            )
+            definition = session.get(BpmnProcessDefinitionModel, definition_id)
             assert definition is not None
             second_lock_attempted.set()
             lock_collaboration_definition(session, definition)

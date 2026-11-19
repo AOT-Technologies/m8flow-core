@@ -417,7 +417,7 @@ def test_failed_collaboration_timer_start_preserves_errored_instance(session):
         'xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"',
     ).replace(
         '<bpmn:startEvent id="OrderStart"/>',
-        '''<bpmn:startEvent id="OrderStart"/>
+        """<bpmn:startEvent id="OrderStart"/>
         <bpmn:startEvent id="OrderTimer">
           <bpmn:timerEventDefinition>
             <bpmn:timeDate>2031-01-01T00:00:00Z</bpmn:timeDate>
@@ -431,7 +431,7 @@ def test_failed_collaboration_timer_start_preserves_errored_instance(session):
           </bpmn:extensionElements>
         </bpmn:serviceTask>
         <bpmn:sequenceFlow id="OrderTimerEndFlow" sourceRef="OrderTimerFailure"
-                           targetRef="OrderEnd"/>''',
+                           targetRef="OrderEnd"/>""",
     )
     _deploy(session, user_id, source=source)
 
@@ -456,7 +456,7 @@ def test_script_failure_during_collaboration_timer_start_preserves_instance(sess
     user_id = _tenant(session)
     source = SOURCE.replace(
         '<bpmn:startEvent id="OrderStart"/>',
-        '''<bpmn:startEvent id="OrderStart"/>
+        """<bpmn:startEvent id="OrderStart"/>
         <bpmn:startEvent id="OrderTimer">
           <bpmn:timerEventDefinition>
             <bpmn:timeDate>2031-01-01T00:00:00Z</bpmn:timeDate>
@@ -468,7 +468,7 @@ def test_script_failure_during_collaboration_timer_start_preserves_instance(sess
           <bpmn:script>raise RuntimeError("timer-started script failed")</bpmn:script>
         </bpmn:scriptTask>
         <bpmn:sequenceFlow id="OrderTimerEndFlow" sourceRef="OrderTimerFailure"
-                           targetRef="OrderEnd"/>''',
+                           targetRef="OrderEnd"/>""",
     )
     _deploy(session, user_id, source=source)
 
@@ -491,17 +491,17 @@ def test_compensation_failure_during_collaboration_timer_start_preserves_instanc
     user_id = _tenant(session)
     source = SOURCE.replace(
         '<bpmn:startEvent id="OrderStart"/>',
-        '''<bpmn:startEvent id="OrderStart"/>
+        """<bpmn:startEvent id="OrderStart"/>
         <bpmn:startEvent id="OrderTimer">
           <bpmn:timerEventDefinition>
             <bpmn:timeDate>2031-01-01T00:00:00Z</bpmn:timeDate>
           </bpmn:timerEventDefinition>
         </bpmn:startEvent>
         <bpmn:sequenceFlow id="OrderTimerFlow" sourceRef="OrderTimer"
-                           targetRef="OrderCompensableWork"/>''',
+                           targetRef="OrderCompensableWork"/>""",
     ).replace(
         '<bpmn:endEvent id="OrderEnd"/>',
-        '''<bpmn:scriptTask id="OrderCompensableWork">
+        """<bpmn:scriptTask id="OrderCompensableWork">
           <bpmn:script>receipt = True</bpmn:script>
         </bpmn:scriptTask>
         <bpmn:boundaryEvent id="OrderCompensationBinding"
@@ -524,7 +524,7 @@ def test_compensation_failure_during_collaboration_timer_start_preserves_instanc
                            targetRef="OrderCompensate"/>
         <bpmn:sequenceFlow id="OrderCompensateToEnd"
                            sourceRef="OrderCompensate" targetRef="OrderEnd"/>
-        <bpmn:endEvent id="OrderEnd"/>''',
+        <bpmn:endEvent id="OrderEnd"/>""",
     )
     _deploy(session, user_id, source=source)
 

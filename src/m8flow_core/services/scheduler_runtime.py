@@ -80,15 +80,11 @@ def claim_due_scheduler_jobs(
     if oldest_due_job.job_type == SchedulerJobType.timer_start.value:
         # Keep cadence advancement in its own poll. If an older occurrence is
         # locked by a slow worker, SKIP LOCKED lets another poll advance cadence.
-        criteria.append(
-            SchedulerJobModel.job_type == SchedulerJobType.timer_start
-        )
+        criteria.append(SchedulerJobModel.job_type == SchedulerJobType.timer_start)
     else:
         # Treat all executable jobs as one phase so a due recurring schedule
         # cannot starve retries, intermediate timers, or collaboration messages.
-        criteria.append(
-            SchedulerJobModel.job_type != SchedulerJobType.timer_start
-        )
+        criteria.append(SchedulerJobModel.job_type != SchedulerJobType.timer_start)
 
     due_jobs = list(
         session.scalars(
@@ -145,7 +141,7 @@ def claim_due_scheduler_jobs(
     if not candidate_ids:
         return []
 
-    claim_result = session.execute(
+    session.execute(
         update(SchedulerJobModel)
         .where(
             SchedulerJobModel.id.in_(candidate_ids),
@@ -159,9 +155,6 @@ def claim_due_scheduler_jobs(
         )
         .execution_options(synchronize_session=False)
     )
-    if claim_result.rowcount == 0:
-        return []
-
     claimed_jobs = list(
         session.scalars(
             select(SchedulerJobModel)
@@ -701,6 +694,7 @@ def _next_timer_start_task_payload_after_fire(
 
 def _timer_start_occurrence_at(timer_task_payload: Mapping[str, object]) -> datetime:
     event_value = timer_task_payload.get("event_value")
+    due_at_value: object | None
     if isinstance(event_value, str):
         due_at_value = event_value
     elif isinstance(event_value, Mapping):
