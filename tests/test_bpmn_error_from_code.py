@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """BPMN errors raised from script and service-task code (M8F-675).
 
 A script raises ``BpmnError("CODE")`` and a connector raises

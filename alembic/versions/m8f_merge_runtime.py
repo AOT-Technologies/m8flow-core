@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Merge the collaboration and compensation migration heads."""
 
 revision = "m8f_merge_runtime"

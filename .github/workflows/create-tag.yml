@@ -1,11 +1,16 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 # Pinned action SHAs are immutable; update intentionally when upgrading.
 # yamllint disable rule:line-length
 name: Create release tag
 
-# Step 1 of a release. Tags the tip of main with the bare version (for
-# example, 1.0.1, with no "v" prefix; m8flow refers to core versions by this
-# tag). Next, run "GitHub Release", then "Publish m8flow-core" from the tag on
-# the release channel.
+# Step 1 of a release. Creates a GPG-signed tag on the tip of main with the
+# bare version (for example, 1.0.1, with no "v" prefix; m8flow refers to core
+# versions by this tag). Next, run "GitHub Release", then "Publish m8flow-core"
+# from the tag on the release channel.
 #
 # Betas are not tagged: publish them straight from a branch on the beta channel.
 on:
@@ -111,11 +116,16 @@ jobs:
 
           print(f"PASS: CHANGELOG.md has a valid [{version}] entry")
 
-      - name: Create and push tag
+      - name: Create and push signed tag
+        env:
+          SIGNING_KEY: ${{ secrets.RELEASE_TAG_GPG_PRIVATE_KEY }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${RELEASE_VERSION}" -m "Release ${RELEASE_VERSION}"
+          printf '%s\n' "$SIGNING_KEY" | gpg --batch --import
+          uid="$(gpg --with-colons --list-secret-keys | awk -F: '$1=="uid"{print $10; exit}')"
+          git config user.name "${uid% <*}"
+          git config user.email "$(sed -E 's/.*<(.*)>.*/\1/' <<<"$uid")"
+          git config user.signingkey "$(gpg --with-colons --list-secret-keys | awk -F: '$1=="fpr"{print $10; exit}')"
+          git tag -s "${RELEASE_VERSION}" -m "Release ${RELEASE_VERSION}"
           git push origin "refs/tags/${RELEASE_VERSION}"
           sha="$(git rev-parse HEAD)"
           echo "Tagged ${sha} as ${RELEASE_VERSION}"

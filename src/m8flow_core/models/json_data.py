@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 import hashlib
@@ -39,7 +44,8 @@ class JsonDataModel(Base):
         if data is None:
             return {}
         normalized_json = json.dumps(dict(data), sort_keys=True, default=str)
-        return json.loads(normalized_json)
+        normalized: dict[str, Any] = json.loads(normalized_json)
+        return normalized
 
     @classmethod
     def hash_payload(
@@ -51,9 +57,7 @@ class JsonDataModel(Base):
             sort_keys=True,
             separators=(",", ":"),
         )
-        payload_hash = hashlib.sha256(
-            normalized_json.encode("utf-8")
-        ).hexdigest()
+        payload_hash = hashlib.sha256(normalized_json.encode("utf-8")).hexdigest()
         return payload_hash, normalized_payload
 
     @classmethod

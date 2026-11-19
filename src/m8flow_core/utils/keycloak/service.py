@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 import json
@@ -5,8 +10,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
+from m8flow_core.utils.http_client import is_http_url, open_http_url
 from m8flow_core.utils.keycloak.config import (
     keycloak_admin_password,
     keycloak_admin_user,
@@ -127,13 +133,10 @@ def ensure_shared_realm_organizations_and_users(
             organization,
             "id",
             message=(
-                f"Keycloak organization '{normalized_alias}' does not expose "
-                "an id."
+                f"Keycloak organization '{normalized_alias}' does not expose an id."
             ),
         )
-        organization_name = (
-            str(organization.get("name", "")).strip() or normalized_name
-        )
+        organization_name = str(organization.get("name", "")).strip() or normalized_name
         organizations_by_alias[normalized_alias] = ProvisionedKeycloakOrganization(
             alias=normalized_alias,
             name=organization_name,
@@ -146,8 +149,10 @@ def ensure_shared_realm_organizations_and_users(
     for user_spec in users:
         normalized_username = user_spec.username.strip()
         normalized_email = user_spec.email.strip()
-        organization = organizations_by_alias.get(user_spec.organization_alias.strip())
-        if organization is None:
+        provisioned_organization = organizations_by_alias.get(
+            user_spec.organization_alias.strip()
+        )
+        if provisioned_organization is None:
             raise KeycloakProvisioningError(
                 "No provisioned Keycloak organization was available for alias "
                 f"'{user_spec.organization_alias}'."
@@ -194,13 +199,13 @@ def ensure_shared_realm_organizations_and_users(
             )
 
         add_organization_member(
-            organization.organization_id,
+            provisioned_organization.organization_id,
             user_id,
             admin_token=token,
         )
 
         organization_member = get_organization_member_by_username(
-            organization.organization_id,
+            provisioned_organization.organization_id,
             normalized_username,
             admin_token=token,
         )
@@ -211,14 +216,14 @@ def ensure_shared_realm_organizations_and_users(
                 "id",
                 message=(
                     "Keycloak organization member "
-                    f"'{normalized_username}' in '{organization.alias}' does "
-                    "not expose an id."
+                    f"'{normalized_username}' in "
+                    f"'{provisioned_organization.alias}' does not expose an id."
                 ),
             )
 
         for group_name in user_spec.organization_group_names:
             add_organization_group_member(
-                organization.organization_id,
+                provisioned_organization.organization_id,
                 group_name,
                 member_id,
                 admin_token=token,
@@ -228,8 +233,8 @@ def ensure_shared_realm_organizations_and_users(
             username=normalized_username,
             email=normalized_email,
             user_id=user_id,
-            organization_alias=organization.alias,
-            organization_id=organization.organization_id,
+            organization_alias=provisioned_organization.alias,
+            organization_id=provisioned_organization.organization_id,
             organization_group_names=user_spec.organization_group_names,
             created=created,
         )
@@ -369,8 +374,7 @@ def create_organization(
             organization,
             "id",
             message=(
-                f"Keycloak organization '{normalized_alias}' does not expose "
-                "an id."
+                f"Keycloak organization '{normalized_alias}' does not expose an id."
             ),
         ),
         admin_token=admin_token,
@@ -743,13 +747,15 @@ def _request(
         request_headers.setdefault("Content-Type", "application/json")
     elif form_body is not None:
         payload = urlencode(form_body).encode("utf-8")
-        request_headers.setdefault(
-            "Content-Type", "application/x-www-form-urlencoded"
-        )
+        request_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
 
+    if not is_http_url(url):
+        raise KeycloakProvisioningError(
+            f"Keycloak URL must be an absolute http or https URL: {url!r}"
+        )
     request = Request(url, data=payload, headers=request_headers, method=method)
     try:
-        with urlopen(request, timeout=timeout) as response:  # nosec B310
+        with open_http_url(request, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
             return _HttpResponse(
                 status_code=response.status,
@@ -782,8 +788,7 @@ def _json_body(response: _HttpResponse) -> Any | None:
         return json.loads(normalized_body)
     except json.JSONDecodeError as exc:
         raise KeycloakProvisioningError(
-            "Keycloak returned invalid JSON: "
-            f"{normalized_body[:500]}"
+            f"Keycloak returned invalid JSON: {normalized_body[:500]}"
         ) from exc
 
 
@@ -804,9 +809,7 @@ def _realm_users_url(
     *,
     query_params: dict[str, str] | None = None,
 ) -> str:
-    base_url = (
-        f"{keycloak_url()}/admin/realms/{quote(realm.strip(), safe='')}/users"
-    )
+    base_url = f"{keycloak_url()}/admin/realms/{quote(realm.strip(), safe='')}/users"
     return _url_with_query(base_url, query_params)
 
 
