@@ -34,7 +34,7 @@ COMPENSATION_TABLES = {"compensation_scope", "compensation_run", "compensation_r
 COLLABORATION_REVISION = "20261112_0005"
 COLLABORATION_INDEX = "ix_process_instance_collaboration_lookup"
 COLLABORATION_FK = "fk_process_instance_definition_tenant"
-HEAD_REVISION = "20261116_0006"
+HEAD_REVISION = "20261117_0007"
 PROCESS_TENANT_INDEX = "m8f_bpmn_process_tenant_id_key"
 PROCESS_TENANT_FK = "fk_process_instance_process_tenant"
 PARENT_INDEXES = {
@@ -359,6 +359,8 @@ def test_migrations_reuse_existing_secret_table_and_foreign_alembic_state(
         "compensation_scope",
         "compensation_run",
         "compensation_record",
+        "message_subscription",
+        "message_delivery_receipt",
         "m8flow_sample_app_alembic_version",
     }.issubset(inspector.get_table_names())
 

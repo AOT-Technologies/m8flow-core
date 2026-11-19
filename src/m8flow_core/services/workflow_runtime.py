@@ -93,6 +93,10 @@ from m8flow_core.services.compensation_runtime import (
 from m8flow_core.services.lane_assignment import (
     assign_work_item_potential_owners,
 )
+from m8flow_core.services.message_registry import (
+    has_managed_messages,
+    sync_instance_messages,
+)
 from m8flow_core.services.multi_instance_runtime import in_iteration
 from m8flow_core.services.process_instances import (
     create_process_instance,
@@ -695,7 +699,8 @@ def _prepare_process_instance_from_definition(
     bpmn_process_id: str | None,
 ) -> tuple[ProcessInstanceModel, str]:
     # Publications, receipts and signal instances share the caller's transaction.
-    if "signalEventDefinition" in (process_definition.source_bpmn_xml or ""):
+    source = process_definition.source_bpmn_xml or ""
+    if "signalEventDefinition" in source or "messageEventDefinition" in source:
         return _prepare_process_instance_from_definition_in_session(
             session,
             tenant_id=tenant_id,
@@ -990,8 +995,14 @@ def retry_errored_service_task_workflow_if_needed(
 
     comp = coordinator(workflow)
     compensation_retry = comp is not None and comp.retry(metadata)
-    errored_service_task_ids = [task.id for task in _errored_service_tasks(workflow)]
-    if not errored_service_task_ids and not compensation_retry:
+    managed_messages = has_managed_messages(workflow)
+    failed_tasks = (
+        runtime_tasks(workflow, state=TaskState.ERROR)
+        if managed_messages
+        else _errored_service_tasks(workflow)
+    )
+    failed_task_ids = [task.id for task in failed_tasks]
+    if not failed_task_ids and not compensation_retry:
         return process_instance
 
     retry_task_data = dict(workflow.data)
@@ -999,13 +1010,18 @@ def retry_errored_service_task_workflow_if_needed(
     if coordinator(workflow):
         # Preserve compensation throw occurrences and detached handler trees.
         # A branch reset can otherwise remove a throw that still owns undo work.
-        for task_id in errored_service_task_ids:
+        for task_id in failed_task_ids:
             task = runtime_task(workflow, task_id)
             task.data.update(metadata)
             task._set_state(TaskState.READY)
     elif not compensation_retry:
-        for task_id in errored_service_task_ids:
-            workflow.reset_from_task_id(task_id, data=retry_task_data)
+        for task_id in failed_task_ids:
+            # Keep the consumed catch's output and inputs to the failed task.
+            task_data = dict(retry_task_data)
+            if managed_messages:
+                task_data.update(runtime_task(workflow, task_id).data)
+                task_data.update(metadata)
+            workflow.reset_from_task_id(task_id, data=task_data)
 
     _run_workflow_with_service_task_failure_handling(
         session,
@@ -1229,10 +1245,11 @@ def repair_process_instance_runtime_representation(
 def _failure_state_may_use_independent_session(
     process_instance: ProcessInstanceModel, workflow: BpmnWorkflow
 ) -> bool:
-    """Keep collaboration, compensation, and signal failures transactional."""
+    """Keep collaboration, compensation, and event recovery transactional."""
     return (
         process_instance.collaboration_correlation_key is None
         and not coordinator(workflow)
+        and not has_managed_messages(workflow)
         and not any(
             isinstance(
                 getattr(task_spec, "event_definition", None), RuntimeSignalDefinition
@@ -1285,6 +1302,17 @@ def _run_workflow_with_service_task_failure_handling(
             run["status"] == "failed" for run in comp.state["runs"].values()
         ):
             exc.compensation_recovery_flushed = True
+        raise
+    except WorkflowTaskException as exc:
+        if has_managed_messages(workflow):
+            _transition_process_instance_to_error_for_service_task_failure(
+                session,
+                tenant_id=tenant_id,
+                process_instance=process_instance,
+                workflow=workflow,
+                occurred_at=occurred_at,
+                failed_task_guid=str(exc.task.id),
+            )
         raise
 
 
@@ -1449,11 +1477,11 @@ def _transition_process_instance_to_error_for_service_task_failure(
     workflow: BpmnWorkflow,
     occurred_at: datetime,
     recovery_only: bool = False,
+    failed_task_guid: str | None = None,
 ) -> None:
     errored_service_tasks = _errored_service_tasks(workflow)
-    failed_task_guid = (
-        str(errored_service_tasks[0].id) if errored_service_tasks else None
-    )
+    if failed_task_guid is None and errored_service_tasks:
+        failed_task_guid = str(errored_service_tasks[0].id)
 
     if recovery_only:
         _persist_workflow_recovery_state(
@@ -1645,6 +1673,7 @@ def _persist_workflow_state(
     from m8flow_core.services.signal_registry import sync_instance_signals
 
     sync_instance_signals(session, process_instance, workflow, occurred_at)
+    sync_instance_messages(session, process_instance, workflow)
     if process_instance.collaboration_correlation_key is not None:
         _enqueue_collaboration_messages(
             session, process_instance, workflow, occurred_at
@@ -2962,10 +2991,10 @@ def _load_process_instance(
             "Process instance "
             f"{process_instance_id} was not found for tenant {tenant_id}"
         )
-    from m8flow_core.services.signal_registry import lock_signal_instance
+    from m8flow_core.services.signal_registry import lock_event_instance
 
     lock_collaboration_instance(session, process_instance)
-    lock_signal_instance(session, process_instance)
+    lock_event_instance(session, process_instance)
     if process_instance.workflow_state_json is not None:
         payload = json.loads(process_instance.workflow_state_json)
         if "m8f_compensation" not in payload and process_instance.bpmn_version_id:

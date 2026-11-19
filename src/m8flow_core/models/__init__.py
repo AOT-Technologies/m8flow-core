@@ -61,6 +61,8 @@ from m8flow_core.models.work_item_user import (
 )
 
 __all__ = [
+    "MessageDeliveryReceiptModel",
+    "MessageSubscriptionModel",
     "SignalDeliveryModel",
     "SignalPublicationModel",
     "SignalRegistryStateModel",
@@ -104,6 +106,10 @@ __all__ = [
     "WorkItemUserModel",
 ]
 
+from m8flow_core.models.messages import (
+    MessageDeliveryReceiptModel,
+    MessageSubscriptionModel,
+)
 from m8flow_core.models.signals import (
     SignalDeliveryModel,
     SignalPublicationModel,

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from m8flow_core.application.commands import (
     ClaimTaskCommand,
     CompleteTaskCommand,
+    CorrelateMessageCommand,
     CreateProcessInstanceCommand,
     ErrorProcessInstanceCommand,
     ImportBpmnProcessDefinitionCommand,
@@ -53,6 +54,7 @@ from m8flow_core.models.user_group_assignment import UserGroupAssignmentModel
 from m8flow_core.services.tenant_users import tenant_identifiers_for
 
 SIGNAL_PUBLISH_COMMAND = "signal.publish"
+MESSAGE_CORRELATE_COMMAND = "message.correlate"
 TASK_CLAIM_COMMAND = "task.claim"
 TASK_COMPLETE_COMMAND = "task.complete"
 PROCESS_START_COMMAND = "process.start"
@@ -125,6 +127,12 @@ AuthorizationPolicyFactory = Callable[[], AuthorizationPolicy]
 
 
 COMMAND_AUTHORIZATION_SPECS: dict[type[object], CommandAuthorizationSpec] = {
+    CorrelateMessageCommand: CommandAuthorizationSpec(
+        command_key=MESSAGE_CORRELATE_COMMAND,
+        permission=PermissionAction.execute.value,
+        resource_type=RESOURCE_TENANT,
+        actor_field_name="user_id",
+    ),
     PublishSignalCommand: CommandAuthorizationSpec(
         command_key=SIGNAL_PUBLISH_COMMAND,
         permission=PermissionAction.execute.value,
@@ -226,11 +234,13 @@ V1_BASIC_ROLE_COMMAND_KEYS: dict[str, tuple[str, ...]] = {
         TASK_COMPLETE_COMMAND,
     ),
     ROLE_MANAGER: (
+        MESSAGE_CORRELATE_COMMAND,
         SIGNAL_PUBLISH_COMMAND,
         TASK_CLAIM_COMMAND,
         TASK_COMPLETE_COMMAND,
     ),
     ROLE_ADMIN: (
+        MESSAGE_CORRELATE_COMMAND,
         SIGNAL_PUBLISH_COMMAND,
         PROCESS_START_COMMAND,
         TASK_CLAIM_COMMAND,

@@ -42,7 +42,8 @@ SIGNAL_REVISION = "l3m4n5o6p7q8"
 COMPENSATION_REVISION = "m8f_671_compensation"
 MERGE_REVISION = "m8f_merge_runtime"
 DEFINITION_TENANT_REVISION = "m8f_instance_definition_tenant"
-HEAD_REVISION = "m8f_instance_process_tenant"
+PROCESS_TENANT_REVISION = "m8f_instance_process_tenant"
+HEAD_REVISION = "m8f_694_message_correlation"
 
 POSTGRES_URL = os.getenv("M8FLOW_POSTGRES_UPGRADE_DATABASE_URL", "")
 
@@ -54,6 +55,7 @@ NAMED_CHECK_CONSTRAINTS = {
     "principal": {"m8f_principal_exactly_one_subject"},
     "process_instance_event": {"m8f_process_instance_event_category_check"},
     "signal_subscription": {"m8f_signal_subscription_references"},
+    "message_delivery_receipt": {"m8f_msg_receipt_outcome"},
 }
 
 
@@ -125,7 +127,8 @@ def test_runtime_migrations_have_one_head_after_the_immutable_baseline() -> None
     revisions = list(script.walk_revisions())
 
     assert {revision.revision: revision.down_revision for revision in revisions} == {
-        HEAD_REVISION: DEFINITION_TENANT_REVISION,
+        HEAD_REVISION: PROCESS_TENANT_REVISION,
+        PROCESS_TENANT_REVISION: DEFINITION_TENANT_REVISION,
         DEFINITION_TENANT_REVISION: MERGE_REVISION,
         MERGE_REVISION: (COLLABORATION_REVISION, COMPENSATION_REVISION),
         COLLABORATION_REVISION: BASELINE_REVISION,

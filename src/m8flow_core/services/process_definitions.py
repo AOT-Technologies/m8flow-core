@@ -36,6 +36,7 @@ from m8flow_core.services.lane_assignment import (
     enroll_definition_lane_owners,
     validate_initiator_lanes,
 )
+from m8flow_core.services.message_model import validate_message_bpmn
 from m8flow_core.services.tenant_users import ensure_user_belongs_to_tenant
 from m8flow_core.services.workflow_runtime import (
     _collect_timer_start_payloads_for_definition,
@@ -82,6 +83,8 @@ def import_bpmn_process_definition(
     parser_source = (
         collaboration_parser_source(source_bytes) if collaboration else source_bytes
     )
+    if collaboration is None and "messageEventDefinition" in source_bpmn_xml_text:
+        validate_message_bpmn(source_bpmn_xml_text)
     participant_ids = collaboration["executable_process_ids"] if collaboration else None
     process_ids = _validate_bpmn_source(
         bpmn_xml=parser_source,
@@ -315,7 +318,9 @@ def _validate_bpmn_source(
     import time, instead of letting them surface during workflow execution.
     """
     parser = _RuntimeSpiffBpmnParser(
-        validator=None, use_noop_dmn_engine=dmn_xml_text is None
+        validator=None,
+        use_noop_dmn_engine=dmn_xml_text is None,
+        manage_external_messages=participant_ids is None,
     )
     try:
         parser.add_bpmn_str(

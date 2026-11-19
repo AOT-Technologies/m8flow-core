@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from m8flow_core.application.commands import (
     ClaimTaskCommand,
     CompleteTaskCommand,
+    CorrelateMessageCommand,
     CreateProcessInstanceCommand,
     ErrorProcessInstanceCommand,
     ImportBpmnProcessDefinitionCommand,
@@ -52,6 +53,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "CorrelateMessageCommand",
     "PublishSignalCommand",
     "RunSignalDeliveriesCommand",
     "GetSignalPublicationQuery",

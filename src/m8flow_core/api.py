@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from m8flow_core.application import (
     ClaimTaskCommand,
     CompleteTaskCommand,
+    CorrelateMessageCommand,
     CreateProcessInstanceCommand,
     ErrorProcessInstanceCommand,
     GetPendingTasksQuery,
@@ -57,16 +58,19 @@ from m8flow_core.application import (
 )
 from m8flow_core.application.dispatcher import _session_scope
 from m8flow_core.errors import (
+    AmbiguousMessageCorrelationError,
     AuthorizationError,
     BpmnCoreError,
     CallActivityResolutionError,
     CompensationExecutionError,
     InvalidStateError,
+    MessageDeliveryConflictError,
     NotFoundError,
     ServiceTaskExecutionError,
     ValidationError,
 )
 from m8flow_core.models.compensation import CompensationStatus
+from m8flow_core.models.messages import MessageDeliveryReceiptModel
 from m8flow_core.models.process_instance import ProcessInstanceStatus
 from m8flow_core.models.process_instance_event import (
     ProcessInstanceEventCategory,
@@ -75,6 +79,7 @@ from m8flow_core.models.process_instance_event import (
 )
 from m8flow_core.models.signals import SignalDeliveryModel, SignalPublicationModel
 from m8flow_core.services.authorization import (
+    MESSAGE_CORRELATE_COMMAND,
     PROCESS_DEFINITION_IMPORT_COMMAND,
     PROCESS_RESUME_COMMAND,
     PROCESS_RETRY_COMMAND,
@@ -106,6 +111,7 @@ from m8flow_core.services.connector_proxy_service_tasks import (
     fetch_connector_proxy_command_definitions,
 )
 from m8flow_core.services.lane_assignment import resolve_lane_assignment_id
+from m8flow_core.services.message_model import validate_message_bpmn
 from m8flow_core.services.process_instance_reactivation import (
     resume_process_instance,
     retry_process_instance,
@@ -251,6 +257,12 @@ def run_due_scheduler_jobs(
 
 
 __all__ = [
+    "CorrelateMessageCommand",
+    "MessageDeliveryReceiptModel",
+    "AmbiguousMessageCorrelationError",
+    "MessageDeliveryConflictError",
+    "MESSAGE_CORRELATE_COMMAND",
+    "validate_message_bpmn",
     "PublishSignalCommand",
     "RunSignalDeliveriesCommand",
     "GetSignalPublicationQuery",

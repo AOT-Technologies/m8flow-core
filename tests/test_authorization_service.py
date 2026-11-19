@@ -443,7 +443,7 @@ def test_authorization_setup_is_idempotent(session: Session) -> None:
         == 1
     )
     assert (
-        session.scalar(select(func.count()).select_from(PermissionAssignmentModel)) == 3
+        session.scalar(select(func.count()).select_from(PermissionAssignmentModel)) == 4
     )
 
 

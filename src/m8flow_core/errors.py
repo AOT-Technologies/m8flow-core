@@ -33,6 +33,14 @@ class InvalidStateError(ValidationError):
     """
 
 
+class AmbiguousMessageCorrelationError(InvalidStateError):
+    """More than one waiting catch matches the message."""
+
+
+class MessageDeliveryConflictError(InvalidStateError):
+    """A committed delivery ID was reused with different inputs."""
+
+
 class AuthorizationError(BpmnCoreError, PermissionError):
     """The caller is not allowed to perform the operation.
 
@@ -66,11 +74,13 @@ class CallActivityResolutionError(ValidationError):
 
 
 __all__ = [
+    "AmbiguousMessageCorrelationError",
     "AuthorizationError",
     "BpmnCoreError",
     "CallActivityResolutionError",
     "CompensationExecutionError",
     "InvalidStateError",
+    "MessageDeliveryConflictError",
     "NotFoundError",
     "ServiceTaskExecutionError",
     "ValidationError",
