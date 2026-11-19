@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from m8flow_core.models.base import Base
 from m8flow_core.models.bpmn_process import BpmnProcessModel
 from m8flow_core.models.bpmn_process_definition import (
@@ -56,8 +61,11 @@ from m8flow_core.models.work_item_user import (
 )
 
 __all__ = [
-    "MessageDeliveryReceiptModel", "MessageSubscriptionModel",
-    "SignalDeliveryModel", "SignalPublicationModel", "SignalRegistryStateModel",
+    "MessageDeliveryReceiptModel",
+    "MessageSubscriptionModel",
+    "SignalDeliveryModel",
+    "SignalPublicationModel",
+    "SignalRegistryStateModel",
     "SignalSubscriptionModel",
     "Base",
     "CompensationRecordModel",

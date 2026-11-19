@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -287,8 +292,7 @@ def test_embedded_catch_receives_the_optional_message_variable(session, actor):
         + '<sequenceFlow id="to_embedded" '
         'sourceRef="outer_start" targetRef="embedded"/>'
         + '<sequenceFlow id="from_embedded" '
-        'sourceRef="embedded" targetRef="outer_end"/>'
-        + xml[end_tag:]
+        'sourceRef="embedded" targetRef="outer_end"/>' + xml[end_tag:]
     )
     instance = start(session, actor, deploy(session, actor, xml), 17)
     request = replace(message(actor, "embedded", 17), message_name="event_fired")

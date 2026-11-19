@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Reindex already-waiting message catches when upgrading from older snapshots."""
 
 from __future__ import annotations

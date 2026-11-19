@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Enforce tenant ownership of an instance's BPMN definition."""
 
 import sqlalchemy as sa

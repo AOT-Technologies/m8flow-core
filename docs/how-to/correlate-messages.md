@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AOT Technologies
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Correlate external BPMN messages
 
 In a single-process definition, model an Intermediate Message Catch Event with

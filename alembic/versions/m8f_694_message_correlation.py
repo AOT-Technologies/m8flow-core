@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Add waiting message subscriptions and delivery receipts."""
 
 import sqlalchemy as sa

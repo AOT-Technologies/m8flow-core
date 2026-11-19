@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Signal persistence and subscriptions without orchestration dependencies.
 
 The caller owns the transaction. Run one delivery loop per tenant.
@@ -648,9 +653,7 @@ def lock_event_instance(
         and definition.collaboration_metadata is None
         and source
         and "messageEventDefinition" in source
-    ) or (
-        "RuntimeMessageDefinition" in (instance.workflow_state_json or "")
-    )
+    ) or ("RuntimeMessageDefinition" in (instance.workflow_state_json or ""))
     if not has_signal and not has_message:
         has_signal = (
             session.scalar(

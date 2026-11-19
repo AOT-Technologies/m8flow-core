@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 import ast
@@ -5,9 +10,9 @@ import hashlib
 import json
 import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
 from defusedxml import ElementTree
@@ -23,6 +28,7 @@ from SpiffWorkflow.bpmn.specs.mixins.events.start_event import StartEvent
 from SpiffWorkflow.bpmn.util import BpmnEvent
 from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from SpiffWorkflow.spiff.specs.event_definitions import MessageEventDefinition
+from SpiffWorkflow.task import Task
 from SpiffWorkflow.util.task import TaskState
 from sqlalchemy import delete, exists, select
 from sqlalchemy.engine import Connection, Engine
@@ -326,7 +332,7 @@ def initialize_process_instance_from_definition(
         session,
         tenant_id=tenant_id,
         process_instance_id=process_instance.id,
-        bpmn_xml=process_definition.source_bpmn_xml,
+        bpmn_xml=_require_source_bpmn_xml(process_definition),
         dmn_xml=process_definition.source_dmn_xml,
         bpmn_process_id=selected_process_id,
         started_at=started_at,
@@ -384,7 +390,7 @@ def _initialize_process_instance_from_timer_start_definition(
 
     occurred_at = _resolve_timestamp(started_at)
     workflow = _build_workflow(
-        bpmn_xml=process_definition.source_bpmn_xml,
+        bpmn_xml=_require_source_bpmn_xml(process_definition),
         dmn_xml=process_definition.source_dmn_xml,
         bpmn_process_id=selected_process_id,
         service_task_context=_service_task_execution_context(
@@ -486,7 +492,7 @@ def _start_collaboration_participant(
     )
     process_instance.collaboration_correlation_key = collaboration_correlation_key
     workflow = _build_workflow(
-        bpmn_xml=process_definition.source_bpmn_xml,
+        bpmn_xml=_require_source_bpmn_xml(process_definition),
         dmn_xml=process_definition.source_dmn_xml,
         bpmn_process_id=selected_process_id,
         service_task_context=_service_task_execution_context(
@@ -815,13 +821,12 @@ def _prepare_process_instance_from_definition_in_session(
     started_at: datetime | None,
     bpmn_process_id: str | None,
 ) -> tuple[ProcessInstanceModel, str]:
-    if process_definition.source_bpmn_xml is None:
-        raise ValidationError("Process definition does not include stored BPMN XML")
+    source_bpmn_xml = _require_source_bpmn_xml(process_definition)
 
     collaboration = process_definition.collaboration_metadata
     if collaboration is None:
         selected_process_id = _select_process_identifier(
-            process_definition.source_bpmn_xml, bpmn_process_id=bpmn_process_id
+            source_bpmn_xml, bpmn_process_id=bpmn_process_id
         )
     else:
         if bpmn_process_id is None:
@@ -988,7 +993,8 @@ def retry_errored_service_task_workflow_if_needed(
     )
     _apply_metadata_to_workflow(workflow, metadata)
 
-    compensation_retry = coordinator(workflow) and coordinator(workflow).retry(metadata)
+    comp = coordinator(workflow)
+    compensation_retry = comp is not None and comp.retry(metadata)
     managed_messages = has_managed_messages(workflow)
     failed_tasks = (
         runtime_tasks(workflow, state=TaskState.ERROR)
@@ -1300,8 +1306,11 @@ def _run_workflow_with_service_task_failure_handling(
     except WorkflowTaskException as exc:
         if has_managed_messages(workflow):
             _transition_process_instance_to_error_for_service_task_failure(
-                session, tenant_id=tenant_id, process_instance=process_instance,
-                workflow=workflow, occurred_at=occurred_at,
+                session,
+                tenant_id=tenant_id,
+                process_instance=process_instance,
+                workflow=workflow,
+                occurred_at=occurred_at,
                 failed_task_guid=str(exc.task.id),
             )
         raise
@@ -1524,12 +1533,19 @@ def _transition_process_instance_to_error_for_service_task_failure(
     session.flush()
 
 
-def _errored_service_tasks(workflow: BpmnWorkflow) -> list[object]:
+def _errored_service_tasks(workflow: BpmnWorkflow) -> list[Task]:
     return [
         task
         for task in runtime_tasks(workflow, state=TaskState.ERROR)
         if type(getattr(task, "task_spec", object())).__name__ == "ServiceTask"
     ]
+
+
+def _require_source_bpmn_xml(process_definition: BpmnProcessDefinitionModel) -> str:
+    source_bpmn_xml = process_definition.source_bpmn_xml
+    if source_bpmn_xml is None:
+        raise ValidationError("Process definition does not include stored BPMN XML")
+    return source_bpmn_xml
 
 
 def _load_process_definition(
@@ -2203,8 +2219,8 @@ def _current_ready_manual_tasks(
     *,
     process_instance: ProcessInstanceModel,
     workflow: BpmnWorkflow,
-) -> list[object]:
-    ready_tasks: list[object] = []
+) -> list[Task]:
+    ready_tasks: list[Task] = []
     for task in runtime_tasks(workflow, state=TaskState.READY, manual=True):
         task_model = session.get(TaskModel, str(task.id))
         if task_model is None:
@@ -2255,7 +2271,7 @@ def _close_inactive_work_item(
 
 
 def _inactive_work_item_status(task_state_name: str | None) -> str:
-    if task_state_name in {
+    if task_state_name is not None and task_state_name in {
         TaskState.get_name(TaskState.CANCELLED),
         TaskState.get_name(TaskState.COMPLETED),
         TaskState.get_name(TaskState.ERROR),
@@ -2280,7 +2296,7 @@ def _materialize_single_manual_task(
     *,
     process_instance: ProcessInstanceModel,
     workflow: BpmnWorkflow,
-    task: object,
+    task: Task,
     occurred_at: datetime,
 ) -> WorkItemModel:
     task_id = str(task.id)
@@ -2373,7 +2389,7 @@ def _upsert_task_model(
     *,
     process_instance: ProcessInstanceModel,
     task_definition: TaskDefinitionModel,
-    task: object,
+    task: Task,
     occurred_at: datetime,
 ) -> TaskModel:
     serialized_task = _WORKFLOW_SERIALIZER.to_dict(task)
@@ -2474,7 +2490,7 @@ def _upsert_work_item(
     *,
     process_instance: ProcessInstanceModel,
     task_model: TaskModel,
-    task: object,
+    task: Task,
     task_definition: TaskDefinitionModel,
     occurred_at: datetime,
 ) -> WorkItemModel:
@@ -2678,7 +2694,7 @@ def _collect_timer_start_payloads_for_definition(
         )
         if process_definition.source_dmn_xml is not None:
             parser.add_dmn_str(_coerce_xml_bytes(process_definition.source_dmn_xml))
-        payloads = []
+        payloads: list[dict[str, Any]] = []
         for process_id in collaboration["executable_process_ids"]:
             spec = parser.get_spec(process_id)
             if not any(
@@ -2802,7 +2818,7 @@ def _force_waiting_timer_start_task_due(
             continue
 
         internal_data = getattr(task, "internal_data", None)
-        if not isinstance(internal_data, Mapping):
+        if not isinstance(internal_data, MutableMapping):
             raise ValidationError("Waiting timer start task is missing internal data")
         internal_data["event_value"] = _forced_due_timer_event_value(
             internal_data.get("event_value")
@@ -2838,7 +2854,7 @@ def _forced_due_timer_event_value(event_value: object) -> str | dict[str, Any]:
     raise ValidationError("Waiting timer task is missing its event_value")
 
 
-def _waiting_timer_event_value(task: object) -> str | dict[str, Any]:
+def _waiting_timer_event_value(task: Task) -> str | dict[str, Any]:
     internal_data = getattr(task, "internal_data", None)
     if not isinstance(internal_data, Mapping):
         raise ValidationError("Waiting timer task is missing internal timer data")
@@ -2913,7 +2929,7 @@ def _apply_metadata_to_workflow(
 
 def _apply_metadata_to_task(
     workflow: BpmnWorkflow,
-    task: object,
+    task: Task,
     metadata: Mapping[str, Any],
 ) -> None:
     if not metadata:
@@ -3003,5 +3019,5 @@ def _resolve_timestamp(timestamp: datetime | None) -> datetime:
     return timestamp or datetime.now(UTC)
 
 
-def _raise_value_error(message: str) -> None:
+def _raise_value_error(message: str) -> NoReturn:
     raise ValidationError(message)

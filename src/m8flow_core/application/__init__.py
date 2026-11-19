@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 from importlib import import_module
@@ -48,8 +53,11 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
-    "CorrelateMessageCommand", "PublishSignalCommand", "RunSignalDeliveriesCommand",
-    "GetSignalPublicationQuery", "ListSignalDeliveriesQuery",
+    "CorrelateMessageCommand",
+    "PublishSignalCommand",
+    "RunSignalDeliveriesCommand",
+    "GetSignalPublicationQuery",
+    "ListSignalDeliveriesQuery",
     "ClaimTaskCommand",
     "CompleteTaskCommand",
     "CreateProcessInstanceCommand",

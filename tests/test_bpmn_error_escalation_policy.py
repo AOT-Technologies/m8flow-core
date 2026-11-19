@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """M8Flow policy for uncaught error and escalation events (M8F-665, BPMN-04).
 
 BPMN 2.0.2 leaves the process behaviour unspecified when no catcher matches.
@@ -58,9 +63,7 @@ def test_uncaught_error_end_event_ends_its_path():
             {"Work::Boom", "Work::AfterInner", "After"},
             id="escalation",
         ),
-        pytest.param(
-            _error_end(ERROR("ErrA")), {"Work::Boom", "After"}, id="error"
-        ),
+        pytest.param(_error_end(ERROR("ErrA")), {"Work::Boom", "After"}, id="error"),
     ],
 )
 def test_uncaught_event_is_persisted_as_a_completed_instance(
@@ -70,8 +73,8 @@ def test_uncaught_event_is_persisted_as_a_completed_instance(
     xml = _bpmn(
         f"{MAIN_START}{REVIEW}{_work(thrower)}"
         f'{_script("After", "main_done = True")}<bpmn:endEvent id="EndEvent" />'
-        f'{_flow("f1", "Mark", "Review")}{_flow("f2", "Review", "Work")}'
-        f'{_flow("f3", "Work", "After")}{_flow("f4", "After", "EndEvent")}'
+        f"{_flow('f1', 'Mark', 'Review')}{_flow('f2', 'Review', 'Work')}"
+        f"{_flow('f3', 'Work', 'After')}{_flow('f4', 'After', 'EndEvent')}"
     )
     tenant, user, instance = _start(session, xml)
 

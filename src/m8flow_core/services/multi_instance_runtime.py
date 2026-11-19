@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Multi-instance runtime semantics on top of SpiffWorkflow (M8F-640).
 
 Instance-local adapters, like ``signal_runtime``: no Spiff class is patched

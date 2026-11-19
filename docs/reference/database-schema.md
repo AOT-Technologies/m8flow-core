@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AOT Technologies
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Database schema
 
 This page lists the tables that m8flow-core's ORM models define. The library
@@ -14,7 +20,8 @@ head, `m8f_694_message_correlation`, adds external message correlation. See
 
 Table and column names are part of the compatibility contract, because host
 applications such as m8flow share the database. Renaming or removing one is a
-breaking change. Don't write to these tables directly; use the
+breaking change and ships only in a new major version; see the
+[versioning policy](versioning.md). Don't write to these tables directly; use the
 [public API](api.md).
 
 ## Conventions

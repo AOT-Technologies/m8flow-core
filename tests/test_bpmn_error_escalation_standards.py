@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """BPMN 2.0 error and escalation catch semantics (M8F-665, gap tracker BPMN-04).
 
 Standards set: which catcher handles an event, by scope and by code. Uncaught
@@ -70,10 +75,10 @@ def _boundary(
     return (
         f'<bpmn:boundaryEvent id="{boundary_id}" attachedToRef="{attached_to}"{flag}>'
         f"{definition}</bpmn:boundaryEvent>"
-        f'{_script(boundary_id + "H", code or marker + " = True")}'
+        f"{_script(boundary_id + 'H', code or marker + ' = True')}"
         f'<bpmn:endEvent id="{boundary_id}E" />'
-        f'{_flow(boundary_id + "1", boundary_id, boundary_id + "H")}'
-        f'{_flow(boundary_id + "2", boundary_id + "H", boundary_id + "E")}'
+        f"{_flow(boundary_id + '1', boundary_id, boundary_id + 'H')}"
+        f"{_flow(boundary_id + '2', boundary_id + 'H', boundary_id + 'E')}"
     )
 
 
@@ -89,10 +94,10 @@ def _handler(
     return (
         f'<bpmn:subProcess id="{handler_id}" triggeredByEvent="true">'
         f'<bpmn:startEvent id="{handler_id}S"{flag}>{definition}</bpmn:startEvent>'
-        f'{_script(handler_id + "H", marker + " = True; handler_saw = before_throw")}'
+        f"{_script(handler_id + 'H', marker + ' = True; handler_saw = before_throw')}"
         f'<bpmn:endEvent id="{handler_id}E" />'
-        f'{_flow(handler_id + "1", handler_id + "S", handler_id + "H")}'
-        f'{_flow(handler_id + "2", handler_id + "H", handler_id + "E")}'
+        f"{_flow(handler_id + '1', handler_id + 'S', handler_id + 'H')}"
+        f"{_flow(handler_id + '2', handler_id + 'H', handler_id + 'E')}"
         "</bpmn:subProcess>"
     )
 
@@ -101,7 +106,7 @@ def _work(thrower: str, extra: str = "") -> str:
     """Embedded subprocess Work that runs ``thrower`` (id ``Boom``) first."""
     return (
         '<bpmn:subProcess id="Work"><bpmn:startEvent id="WorkStart" />'
-        f'{thrower}{_flow("k1", "WorkStart", "Boom")}{extra}</bpmn:subProcess>'
+        f"{thrower}{_flow('k1', 'WorkStart', 'Boom')}{extra}</bpmn:subProcess>"
     )
 
 
@@ -114,13 +119,13 @@ def _escalation_then_continue() -> str:
         f'<bpmn:intermediateThrowEvent id="Boom">{ESCALATION}'
         "</bpmn:intermediateThrowEvent>"
         f'{_script("AfterInner", "after_inner = True")}<bpmn:endEvent id="WorkEnd" />'
-        f'{_flow("k3", "Boom", "AfterInner")}{_flow("k4", "AfterInner", "WorkEnd")}'
+        f"{_flow('k3', 'Boom', 'AfterInner')}{_flow('k4', 'AfterInner', 'WorkEnd')}"
     )
 
 
 MAIN_START = (
     '<bpmn:startEvent id="StartEvent" />'
-    f'{_script("Mark", "before_throw = True")}{_flow("f0", "StartEvent", "Mark")}'
+    f"{_script('Mark', 'before_throw = True')}{_flow('f0', 'StartEvent', 'Mark')}"
 )
 
 
@@ -129,8 +134,8 @@ def _process(work: str, outer: str = "") -> str:
     return _bpmn(
         f"{MAIN_START}{work}{outer}"
         f'{_script("After", "main_done = True")}<bpmn:endEvent id="EndEvent" />'
-        f'{_flow("f1", "Mark", "Work")}{_flow("f2", "Work", "After")}'
-        f'{_flow("f3", "After", "EndEvent")}'
+        f"{_flow('f1', 'Mark', 'Work')}{_flow('f2', 'Work', 'After')}"
+        f"{_flow('f3', 'After', 'EndEvent')}"
     )
 
 
@@ -139,14 +144,14 @@ def _wrapped(work_with_inner_boundary: str, outer: str) -> str:
     wrap = (
         '<bpmn:subProcess id="Wrap"><bpmn:startEvent id="WrapStart" />'
         f'{work_with_inner_boundary}<bpmn:endEvent id="WrapEnd" />'
-        f'{_flow("w1", "WrapStart", "Work")}{_flow("w2", "Work", "WrapEnd")}'
+        f"{_flow('w1', 'WrapStart', 'Work')}{_flow('w2', 'Work', 'WrapEnd')}"
         "</bpmn:subProcess>"
     )
     return _bpmn(
         f"{MAIN_START}{wrap}{outer}"
         f'{_script("After", "main_done = True")}<bpmn:endEvent id="EndEvent" />'
-        f'{_flow("f1", "Mark", "Wrap")}{_flow("f2", "Wrap", "After")}'
-        f'{_flow("f3", "After", "EndEvent")}'
+        f"{_flow('f1', 'Mark', 'Wrap')}{_flow('f2', 'Wrap', 'After')}"
+        f"{_flow('f3', 'After', 'EndEvent')}"
     )
 
 
@@ -195,9 +200,7 @@ def test_catch_all_error_boundary_catches_any_code():
         pytest.param(
             _escalation_then_continue(), ERROR("ErrA"), id="escalation-vs-error"
         ),
-        pytest.param(
-            _error_end(ERROR("ErrA")), ESCALATION, id="error-vs-escalation"
-        ),
+        pytest.param(_error_end(ERROR("ErrA")), ESCALATION, id="error-vs-escalation"),
     ],
 )
 def test_error_and_escalation_are_not_cross_caught(thrower, catcher):
@@ -217,9 +220,7 @@ def test_escalation_boundary_catches_and_interrupts_the_activity():
 def test_non_interrupting_escalation_boundary_runs_beside_the_activity():
     xml = _process(
         _work(_escalation_then_continue()),
-        _boundary(
-            "OuterB", "Work", ESCALATION, "outer_handled", cancel_activity=False
-        ),
+        _boundary("OuterB", "Work", ESCALATION, "outer_handled", cancel_activity=False),
     )
     workflow = _run(xml)
     assert workflow.completed
@@ -286,9 +287,7 @@ def test_non_matching_error_event_subprocess_does_not_catch():
         pytest.param(
             _escalation_then_continue(), ERROR("ErrA"), id="escalation-vs-error"
         ),
-        pytest.param(
-            _error_end(ERROR("ErrA")), ESCALATION, id="error-vs-escalation"
-        ),
+        pytest.param(_error_end(ERROR("ErrA")), ESCALATION, id="error-vs-escalation"),
     ],
 )
 def test_event_subprocess_does_not_catch_the_other_event_type(thrower, catcher):
@@ -423,7 +422,7 @@ def test_interrupted_subprocess_is_recorded_as_cancelled(thrower, catcher, work_
 def test_script_exception_is_not_caught_as_a_bpmn_error(catcher):
     thrower = (
         f'{_script("Boom", "x = 1 / 0")}<bpmn:endEvent id="WorkEnd" />'
-        f'{_flow("k3", "Boom", "WorkEnd")}'
+        f"{_flow('k3', 'Boom', 'WorkEnd')}"
     )
     xml = _process(_work(thrower), catcher)
     with pytest.raises(Exception, match="division by zero"):

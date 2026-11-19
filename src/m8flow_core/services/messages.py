@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Correlate a message with exactly one persisted, eligible runtime task."""
 
 from __future__ import annotations

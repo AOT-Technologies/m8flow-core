@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Read the supported context-based correlation declarations from BPMN."""
 
 from __future__ import annotations

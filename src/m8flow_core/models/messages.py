@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Waiting message subscriptions and committed delivery receipts."""
 
 from __future__ import annotations
