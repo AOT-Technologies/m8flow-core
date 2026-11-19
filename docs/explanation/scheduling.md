@@ -35,7 +35,7 @@ the following columns:
 | `id` | integer | No | Primary key |
 | `m8f_tenant_id` | string | No | Foreign key to `m8flow_tenant.id`. Every scheduler read and write is tenant-scoped. |
 | `job_key` | string(255) | No | Deduplication key for the logical job, unique within the tenant |
-| `job_type` | string(50) | No | Indexed. One of `intermediate_timer`, `process_retry`, `timer_start`, or `collaboration_message`. |
+| `job_type` | string(50) | No | Indexed. One of `intermediate_timer`, `process_retry`, `timer_start`, `timer_start_occurrence`, or `collaboration_message`. |
 | `process_instance_id` | integer | Yes | Foreign key to `process_instance.id`, for jobs that belong to a running instance |
 | `bpmn_process_definition_id` | integer | Yes | Foreign key to `bpmn_process_definition.id`, for jobs that belong to a definition, such as timer starts |
 | `locked_by` | string(255) | Yes | The worker that claimed the job. `NULL` means unclaimed. |
@@ -65,6 +65,14 @@ In practice, the table behaves like a small durable queue:
 3. It claims each row by setting `locked_by`.
 4. When the job runs, the row is either deleted or rewritten with its next due
    time.
+
+Each pass selects the class of the oldest unlocked due job. A cadence pass
+claims due `timer_start` jobs by themselves; an execution pass claims due
+occurrences, intermediate timers, retries, and collaboration messages. This
+keeps cadence advancement in a separate transaction from process startup, while
+allowing overdue execution work to progress between cadence passes. If an
+execution row is locked by another worker, `SKIP LOCKED` lets a poller advance
+the cadence instead.
 
 ## Storage helpers
 
@@ -130,10 +138,18 @@ deletes it.
 ### Timer start lifecycle
 
 Importing a definition with a timer start event creates a definition-scoped
-`timer_start` job. When it's due, the runner creates a new process instance,
-started by an internal tenant-scoped system user. For a finite `timeCycle`,
-such as `R3/PT20S`, the runner rewrites the row with the next due time after
-each firing, and deletes it after the last one.
+`timer_start` job. When it is due, one poll atomically writes a uniquely keyed
+`timer_start_occurrence` job and advances the schedule row to the next cadence
+time. A later poll creates the process instance from that occurrence, started
+by an internal tenant-scoped system user, then deletes the occurrence job in
+the same transaction. A crash rolls back both instance creation and job
+deletion, so retrying cannot create a duplicate instance.
+
+For a finite `timeCycle`, such as `R3/PT20S`, the schedule advances from the
+stored `next` time, not from when the previous instance finished. Slow,
+unfinished, or failed instances therefore do not delay later occurrences.
+If an automatic script or service task fails, its instance is saved in `error`
+and that occurrence is consumed; the next cadence remains scheduled.
 
 ### Intermediate and boundary timer lifecycle
 
@@ -193,12 +209,18 @@ wake up. The library claims due jobs, starts timer instances, restores and
 advances workflows, runs retries, and reschedules timers.
 
 If one claimed job fails, the runner releases its lock, finishes the other
-jobs in the batch, and then raises: the original error for one failure, or a
-summary `BpmnCoreError` for several.
+jobs in the batch, and moves a still-due job's `run_at` one second past the
+poll time. A committed failure therefore gives other due job classes a chance
+to run before retrying. Catch the error inside the caller's transaction to
+commit successful jobs and the failed job's release delay. Letting it escape
+rolls back the whole poll, including this delay. The runner then raises the
+original error for one failure, or a summary `BpmnCoreError` for several.
 
-The inline mode assumes one poller per database or tenant. The claim columns
-are stored in every mode, so multi-worker coordination can be added later
-without a schema change.
+Workers claim rows with `SELECT FOR UPDATE SKIP LOCKED` and a conditional
+update, so supported databases do not let overlapping polls claim the same
+job. SQLite does not provide those row locks; use one poller with SQLite.
+Different jobs that mutate the same process instance are not serialized as a
+single unit, so keep one writer per instance.
 
 ### Celery
 

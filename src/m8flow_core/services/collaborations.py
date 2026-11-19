@@ -284,7 +284,9 @@ def lock_collaboration_definition(
         )
     elif (
         session.scalar(
-            select(BpmnProcessDefinitionModel.id).where(*scope).with_for_update()
+            select(BpmnProcessDefinitionModel.id)
+            .where(*scope)
+            .with_for_update(key_share=True)
         )
         is None
     ):

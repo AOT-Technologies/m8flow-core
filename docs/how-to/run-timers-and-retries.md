@@ -22,6 +22,7 @@ To fire due jobs, call `run_due_scheduler_jobs` in a loop, each time inside
 its own transaction:
 
 ```python
+import logging
 import time
 
 from sqlalchemy import create_engine
@@ -29,14 +30,23 @@ from sqlalchemy import create_engine
 from m8flow_core import api
 
 engine = create_engine(DATABASE_URL)
+logger = logging.getLogger(__name__)
 
 while True:
+    scheduler_error = None
     with engine.begin() as connection:
-        processed = api.run_due_scheduler_jobs(
-            connection,
-            worker_id="inline-scheduler-1",
-            tenant_id=TENANT_ID,
-        )
+        try:
+            processed = api.run_due_scheduler_jobs(
+                connection,
+                worker_id="inline-scheduler-1",
+                tenant_id=TENANT_ID,
+            )
+        except api.BpmnCoreError as exc:
+            # Commit successful jobs and the failed job's release/backoff.
+            scheduler_error = exc
+            processed = 0
+    if scheduler_error is not None:
+        logger.error("Scheduler poll failed: %s", scheduler_error)
     time.sleep(5 if processed == 0 else 1)
 ```
 
@@ -50,8 +60,18 @@ faster while there's work. It processes at most `limit` jobs per call, 100 by
 default. In tests, pass `now=` a timezone-aware `datetime` to decide what's due
 without waiting for the real clock.
 
-Run one poller per database, or one per tenant. The scheduler doesn't yet
-coordinate several workers that claim the same rows.
+Workers use database row locks and a conditional update to avoid claiming the
+same job concurrently on databases that support `SELECT FOR UPDATE SKIP
+LOCKED`. SQLite ignores those locks, so run one poller when using SQLite.
+Keep one writer per process instance because different jobs for the same
+instance are not serialized together.
+
+A timer start uses two durable jobs. One poll records the due occurrence and
+advances the recurring schedule. Scheduler polls process cadence rows
+separately from executable jobs, with the oldest unlocked due job choosing the
+poll class. Commit the poll transaction, then poll again to start process
+instances. If a slow occurrence is locked by another worker, another poll can
+advance the cadence without waiting for it.
 
 ## Deliver collaboration messages
 

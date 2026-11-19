@@ -109,6 +109,16 @@ def _instances(session):
     )
 
 
+class FailingCollaborationTimerConnector:
+    connector_key = "timer-test"
+
+    def list_commands(self) -> tuple[api.ServiceTaskCommandDefinition, ...]:
+        return (api.ServiceTaskCommandDefinition("timer-test", "Fail"),)
+
+    def execute(self, request: api.ServiceTaskRequest) -> api.ServiceTaskResult:
+        raise RuntimeError("timer-started collaboration task failed")
+
+
 def test_deploy_preserves_pools_and_flows_and_validates_references(session):
     user_id = _tenant(session)
     definition = _deploy(session, user_id)
@@ -389,11 +399,145 @@ def test_collaboration_timers_target_participants_and_are_not_rearmed_on_reimpor
         "Fulfilment",
     }
     assert api.run_due_scheduler_jobs(session, now=NOW) == 2
+    assert _instances(session) == []
+    assert api.run_due_scheduler_jobs(session, now=NOW) == 2
     assert {instance.status for instance in _instances(session)} == {
         "user_input_required",
         "complete",
     }
     assert _deploy(session, user_id, source=source).id == definition.id
+    assert _jobs(session) == []
+
+
+def test_failed_collaboration_timer_start_preserves_errored_instance(session):
+    user_id = _tenant(session)
+    source = SOURCE.replace(
+        'xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"',
+        'xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" '
+        'xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"',
+    ).replace(
+        '<bpmn:startEvent id="OrderStart"/>',
+        """<bpmn:startEvent id="OrderStart"/>
+        <bpmn:startEvent id="OrderTimer">
+          <bpmn:timerEventDefinition>
+            <bpmn:timeDate>2031-01-01T00:00:00Z</bpmn:timeDate>
+          </bpmn:timerEventDefinition>
+        </bpmn:startEvent>
+        <bpmn:sequenceFlow id="OrderTimerFlow" sourceRef="OrderTimer"
+                           targetRef="OrderTimerFailure"/>
+        <bpmn:serviceTask id="OrderTimerFailure" name="Fail timer startup">
+          <bpmn:extensionElements>
+            <spiffworkflow:serviceTaskOperator id="timer-test/Fail"/>
+          </bpmn:extensionElements>
+        </bpmn:serviceTask>
+        <bpmn:sequenceFlow id="OrderTimerEndFlow" sourceRef="OrderTimerFailure"
+                           targetRef="OrderEnd"/>""",
+    )
+    _deploy(session, user_id, source=source)
+
+    assert api.run_due_scheduler_jobs(session, now=NOW) == 1
+    session.commit()
+    assert _instances(session) == []
+
+    registry = api.ServiceTaskRegistry(
+        connectors=(FailingCollaborationTimerConnector(),)
+    )
+    with api.service_task_registry_scope(registry):
+        assert api.run_due_scheduler_jobs(session, now=NOW) == 1
+    session.commit()
+
+    instances = _instances(session)
+    assert len(instances) == 1
+    assert instances[0].status == api.ProcessInstanceStatus.error
+    assert _jobs(session) == []
+
+
+def test_script_failure_during_collaboration_timer_start_preserves_instance(session):
+    user_id = _tenant(session)
+    source = SOURCE.replace(
+        '<bpmn:startEvent id="OrderStart"/>',
+        """<bpmn:startEvent id="OrderStart"/>
+        <bpmn:startEvent id="OrderTimer">
+          <bpmn:timerEventDefinition>
+            <bpmn:timeDate>2031-01-01T00:00:00Z</bpmn:timeDate>
+          </bpmn:timerEventDefinition>
+        </bpmn:startEvent>
+        <bpmn:sequenceFlow id="OrderTimerFlow" sourceRef="OrderTimer"
+                           targetRef="OrderTimerFailure"/>
+        <bpmn:scriptTask id="OrderTimerFailure" name="Fail timer startup">
+          <bpmn:script>raise RuntimeError("timer-started script failed")</bpmn:script>
+        </bpmn:scriptTask>
+        <bpmn:sequenceFlow id="OrderTimerEndFlow" sourceRef="OrderTimerFailure"
+                           targetRef="OrderEnd"/>""",
+    )
+    _deploy(session, user_id, source=source)
+
+    assert api.run_due_scheduler_jobs(session, now=NOW) == 1
+    session.commit()
+    assert _instances(session) == []
+
+    assert api.run_due_scheduler_jobs(session, now=NOW) == 1
+    session.commit()
+
+    instances = _instances(session)
+    assert len(instances) == 1
+    assert instances[0].status == api.ProcessInstanceStatus.error
+    assert _jobs(session) == []
+
+
+def test_compensation_failure_during_collaboration_timer_start_preserves_instance(
+    session,
+):
+    user_id = _tenant(session)
+    source = SOURCE.replace(
+        '<bpmn:startEvent id="OrderStart"/>',
+        """<bpmn:startEvent id="OrderStart"/>
+        <bpmn:startEvent id="OrderTimer">
+          <bpmn:timerEventDefinition>
+            <bpmn:timeDate>2031-01-01T00:00:00Z</bpmn:timeDate>
+          </bpmn:timerEventDefinition>
+        </bpmn:startEvent>
+        <bpmn:sequenceFlow id="OrderTimerFlow" sourceRef="OrderTimer"
+                           targetRef="OrderCompensableWork"/>""",
+    ).replace(
+        '<bpmn:endEvent id="OrderEnd"/>',
+        """<bpmn:scriptTask id="OrderCompensableWork">
+          <bpmn:script>receipt = True</bpmn:script>
+        </bpmn:scriptTask>
+        <bpmn:boundaryEvent id="OrderCompensationBinding"
+                            attachedToRef="OrderCompensableWork"
+                            cancelActivity="false">
+          <bpmn:compensateEventDefinition/>
+        </bpmn:boundaryEvent>
+        <bpmn:association id="OrderCompensationAssociation"
+                          sourceRef="OrderCompensationBinding"
+                          targetRef="OrderCompensationFailure"/>
+        <bpmn:scriptTask id="OrderCompensationFailure"
+                         isForCompensation="true">
+          <bpmn:script>raise RuntimeError("compensation failed")</bpmn:script>
+        </bpmn:scriptTask>
+        <bpmn:intermediateThrowEvent id="OrderCompensate">
+          <bpmn:compensateEventDefinition/>
+        </bpmn:intermediateThrowEvent>
+        <bpmn:sequenceFlow id="OrderWorkToCompensate"
+                           sourceRef="OrderCompensableWork"
+                           targetRef="OrderCompensate"/>
+        <bpmn:sequenceFlow id="OrderCompensateToEnd"
+                           sourceRef="OrderCompensate" targetRef="OrderEnd"/>
+        <bpmn:endEvent id="OrderEnd"/>""",
+    )
+    _deploy(session, user_id, source=source)
+
+    assert api.run_due_scheduler_jobs(session, now=NOW) == 1
+    session.commit()
+    assert _instances(session) == []
+
+    assert api.run_due_scheduler_jobs(session, now=NOW) == 1
+    session.commit()
+
+    instances = _instances(session)
+    assert len(instances) == 1
+    assert instances[0].status == api.ProcessInstanceStatus.error
     assert _jobs(session) == []
 
 

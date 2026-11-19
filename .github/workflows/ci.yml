@@ -236,6 +236,11 @@ jobs:
           M8FLOW_TEST_POSTGRES_URL: ${{ env.M8FLOW_TEST_DATABASE_URL }}
         run: uv run --locked --extra postgresql pytest integration/
 
+      - name: Run recurring timer scheduler integration test
+        env:
+          M8FLOW_TEST_POSTGRES_URL: ${{ env.M8FLOW_TEST_DATABASE_URL }}
+        run: uv run --locked --extra postgresql pytest integration/test_postgres_scheduler.py
+
   sample-app-tests:
     name: Sample app lint and tests
     runs-on: ubuntu-latest

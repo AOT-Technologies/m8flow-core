@@ -375,17 +375,19 @@ def _initialize_process_instance_from_timer_start_definition(
     process_model_identifier = process_definition.process_model_identifier or str(
         process_definition.id
     )
-    process_instance, selected_process_id = _prepare_process_instance_from_definition(
-        session,
-        tenant_id=tenant_id,
-        process_definition=process_definition,
-        process_model_identifier=process_model_identifier,
-        process_initiator_id=process_initiator_id,
-        submission_metadata=None,
-        summary=None,
-        process_version=1,
-        started_at=started_at,
-        bpmn_process_id=None,
+    process_instance, selected_process_id = (
+        _prepare_process_instance_from_definition_in_session(
+            session,
+            tenant_id=tenant_id,
+            process_definition=process_definition,
+            process_model_identifier=process_model_identifier,
+            process_initiator_id=process_initiator_id,
+            submission_metadata=None,
+            summary=None,
+            process_version=1,
+            started_at=started_at,
+            bpmn_process_id=None,
+        )
     )
 
     occurred_at = _resolve_timestamp(started_at)
@@ -414,31 +416,42 @@ def _initialize_process_instance_from_timer_start_definition(
             process_instance_id=process_instance.id,
         ),
     )
-    _run_workflow_with_service_task_failure_handling(
-        session,
-        tenant_id=tenant_id,
-        process_instance=process_instance,
-        workflow=workflow,
-        occurred_at=occurred_at,
-        autonomous_failure_state_persistence=True,
-    )
-    forced_due = _force_waiting_timer_start_task_due(
-        workflow,
-        timer_start_task_spec_name=timer_start_task_spec_name,
-    )
-    if forced_due:
-        for tree in execution_workflows(workflow):
-            tree.refresh_timers()
-        if not runtime_tasks(workflow, state=TaskState.READY, manual=True):
-            _run_workflow_with_service_task_failure_handling(
-                session,
-                tenant_id=tenant_id,
-                process_instance=process_instance,
-                workflow=workflow,
-                occurred_at=occurred_at,
-                autonomous_failure_state_persistence=True,
-            )
-
+    try:
+        _run_workflow_with_service_task_failure_handling(
+            session,
+            tenant_id=tenant_id,
+            process_instance=process_instance,
+            workflow=workflow,
+            occurred_at=occurred_at,
+            autonomous_failure_state_persistence=False,
+        )
+        forced_due = _force_waiting_timer_start_task_due(
+            workflow,
+            timer_start_task_spec_name=timer_start_task_spec_name,
+        )
+        if forced_due:
+            for tree in execution_workflows(workflow):
+                tree.refresh_timers()
+            if not runtime_tasks(workflow, state=TaskState.READY, manual=True):
+                _run_workflow_with_service_task_failure_handling(
+                    session,
+                    tenant_id=tenant_id,
+                    process_instance=process_instance,
+                    workflow=workflow,
+                    occurred_at=occurred_at,
+                    autonomous_failure_state_persistence=False,
+                )
+    except WorkflowTaskException as exc:
+        failed_task = _failed_task(workflow, exc)
+        _transition_process_instance_to_error_for_failed_workflow_task(
+            session,
+            tenant_id=tenant_id,
+            process_instance=process_instance,
+            workflow=workflow,
+            occurred_at=occurred_at,
+            failed_task_guid=(str(failed_task.id) if failed_task is not None else None),
+        )
+        return process_instance
     return _finalize_initialized_process_instance_workflow(
         session,
         tenant_id=tenant_id,
@@ -525,13 +538,33 @@ def _start_collaboration_participant(
     _activate_collaboration_start(
         workflow, start_event_id=start_event_id, timer_start=timer_start
     )
-    _run_workflow_with_service_task_failure_handling(
-        session,
-        tenant_id=tenant_id,
-        process_instance=process_instance,
-        workflow=workflow,
-        occurred_at=occurred_at,
-    )
+    try:
+        _run_workflow_with_service_task_failure_handling(
+            session,
+            tenant_id=tenant_id,
+            process_instance=process_instance,
+            workflow=workflow,
+            occurred_at=occurred_at,
+        )
+    except (ServiceTaskExecutionError, CompensationExecutionError):
+        if not timer_start:
+            raise
+        # Keep the transition to error in this savepoint. Letting the failure
+        # escape would roll back the timer-created participant with the savepoint.
+        return process_instance
+    except WorkflowTaskException as exc:
+        if not timer_start:
+            raise
+        failed_task = _failed_task(workflow, exc)
+        _transition_process_instance_to_error_for_failed_workflow_task(
+            session,
+            tenant_id=tenant_id,
+            process_instance=process_instance,
+            workflow=workflow,
+            occurred_at=occurred_at,
+            failed_task_guid=(str(failed_task.id) if failed_task is not None else None),
+        )
+        return process_instance
     return _finalize_initialized_process_instance_workflow(
         session,
         tenant_id=tenant_id,
@@ -1290,7 +1323,7 @@ def _run_workflow_with_service_task_failure_handling(
             )
         ):
             raise
-        _transition_process_instance_to_error_for_service_task_failure(
+        _transition_process_instance_to_error_for_failed_workflow_task(
             session,
             tenant_id=tenant_id,
             process_instance=process_instance,
@@ -1305,7 +1338,7 @@ def _run_workflow_with_service_task_failure_handling(
         raise
     except WorkflowTaskException as exc:
         if has_managed_messages(workflow):
-            _transition_process_instance_to_error_for_service_task_failure(
+            _transition_process_instance_to_error_for_failed_workflow_task(
                 session,
                 tenant_id=tenant_id,
                 process_instance=process_instance,
@@ -1442,7 +1475,7 @@ def _persist_service_task_failure_state_in_independent_session(
             return False
 
         if transition_to_error:
-            _transition_process_instance_to_error_for_service_task_failure(
+            _transition_process_instance_to_error_for_failed_workflow_task(
                 autonomous_session,
                 tenant_id=tenant_id,
                 process_instance=process_instance,
@@ -1472,15 +1505,15 @@ def _session_engine(session: Session) -> Engine | None:
     return None
 
 
-def _transition_process_instance_to_error_for_service_task_failure(
+def _transition_process_instance_to_error_for_failed_workflow_task(
     session: Session,
     *,
     tenant_id: str,
     process_instance: ProcessInstanceModel,
     workflow: BpmnWorkflow,
     occurred_at: datetime,
-    recovery_only: bool = False,
     failed_task_guid: str | None = None,
+    recovery_only: bool = False,
 ) -> None:
     errored_service_tasks = _errored_service_tasks(workflow)
     if failed_task_guid is None and errored_service_tasks:

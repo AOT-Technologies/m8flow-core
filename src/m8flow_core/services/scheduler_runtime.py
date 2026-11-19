@@ -7,13 +7,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from m8flow_core.errors import (
     BpmnCoreError,
+    CompensationExecutionError,
     NotFoundError,
+    ServiceTaskExecutionError,
     ValidationError,
 )
 from m8flow_core.models.bpmn_process_definition import (
@@ -34,7 +37,6 @@ from m8flow_core.services.process_instance_reactivation import (
 from m8flow_core.services.process_instances import get_process_instance
 from m8flow_core.services.scheduler_jobs import (
     delete_scheduler_job,
-    list_due_scheduler_jobs,
     upsert_scheduler_job,
 )
 from m8flow_core.services.workflow_runtime import (
@@ -45,6 +47,7 @@ from m8flow_core.services.workflow_runtime import (
 
 _TIMER_START_SYSTEM_USERNAME = "__m8f_timer_start__"
 _TIMER_START_SYSTEM_SERVICE_ID_PREFIX = "__m8f_timer_start__"
+_SCHEDULER_FAILURE_RETRY_DELAY = timedelta(seconds=1)
 
 
 def claim_due_scheduler_jobs(
@@ -56,19 +59,49 @@ def claim_due_scheduler_jobs(
     tenant_id: str | None = None,
 ) -> list[SchedulerJobModel]:
     normalized_worker_id = _normalize_worker_id(worker_id)
+    if limit <= 0:
+        raise ValidationError("Scheduler job limit must be greater than zero")
     occurred_at = _resolve_timestamp(now)
-    claimed_jobs: list[SchedulerJobModel] = []
-
-    due_jobs = list_due_scheduler_jobs(
-        session,
-        now=occurred_at,
-        limit=limit,
-        tenant_id=tenant_id,
+    criteria = [
+        SchedulerJobModel.locked_by.is_(None),
+        SchedulerJobModel.run_at <= occurred_at,
+    ]
+    if tenant_id is not None:
+        criteria.append(SchedulerJobModel.m8f_tenant_id == tenant_id)
+    oldest_due_job = session.scalar(
+        select(SchedulerJobModel)
+        .where(*criteria)
+        .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
+        .limit(1)
+        .with_for_update(skip_locked=True)
     )
-    job_ids = {job.id for job in due_jobs}
+    if oldest_due_job is None:
+        return []
+    if oldest_due_job.job_type == SchedulerJobType.timer_start.value:
+        # Keep cadence advancement in its own poll. If an older occurrence is
+        # locked by a slow worker, SKIP LOCKED lets another poll advance cadence.
+        criteria.append(SchedulerJobModel.job_type == SchedulerJobType.timer_start)
+    else:
+        # Treat all executable jobs as one phase so a due recurring schedule
+        # cannot starve retries, intermediate timers, or collaboration messages.
+        criteria.append(SchedulerJobModel.job_type != SchedulerJobType.timer_start)
+
+    due_jobs = list(
+        session.scalars(
+            select(SchedulerJobModel)
+            .where(*criteria)
+            .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
+            .limit(limit)
+        ).all()
+    )
+    if not due_jobs:
+        return []
+
+    candidate_job_ids = {job.id for job in due_jobs}
     definitions = {
         definition.id: definition
         for job in due_jobs
+        if job.job_type != SchedulerJobType.timer_start.value
         if (definition := job.bpmn_process_definition) is not None
         and definition.m8f_tenant_id == job.m8f_tenant_id
         and definition.collaboration_metadata is not None
@@ -76,20 +109,66 @@ def claim_due_scheduler_jobs(
     if definitions:
         for definition_id in sorted(definitions):
             lock_collaboration_definition(session, definitions[definition_id])
-        # Application transitions can reschedule or remove jobs while we wait.
-        due_jobs = [
-            job
-            for job in list_due_scheduler_jobs(
-                session, now=occurred_at, limit=limit, tenant_id=tenant_id
-            )
-            if job.id in job_ids
-        ]
-    for job in due_jobs:
-        job.locked_by = normalized_worker_id
-        job.locked_at = occurred_at
-        job.updated_at = occurred_at
-        claimed_jobs.append(job)
+        # Collaboration state transitions can reschedule jobs while we wait.
+        due_jobs = list(
+            session.scalars(
+                select(SchedulerJobModel)
+                .where(
+                    *criteria,
+                    SchedulerJobModel.id.in_(candidate_job_ids),
+                )
+                .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
+                .limit(limit)
+            ).all()
+        )
 
+    candidate_ids = [job.id for job in due_jobs]
+    if not candidate_ids:
+        return []
+
+    candidate_jobs = list(
+        session.scalars(
+            select(SchedulerJobModel)
+            .where(
+                *criteria,
+                SchedulerJobModel.id.in_(candidate_ids),
+            )
+            .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
+            .with_for_update(skip_locked=True)
+        ).all()
+    )
+    candidate_ids = [job.id for job in candidate_jobs]
+    if not candidate_ids:
+        return []
+
+    session.execute(
+        update(SchedulerJobModel)
+        .where(
+            SchedulerJobModel.id.in_(candidate_ids),
+            SchedulerJobModel.locked_by.is_(None),
+            SchedulerJobModel.run_at <= occurred_at,
+        )
+        .values(
+            locked_by=normalized_worker_id,
+            locked_at=occurred_at,
+            updated_at=occurred_at,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    claimed_jobs = list(
+        session.scalars(
+            select(SchedulerJobModel)
+            .where(
+                SchedulerJobModel.id.in_(candidate_ids),
+                SchedulerJobModel.locked_by == normalized_worker_id,
+            )
+            .order_by(SchedulerJobModel.run_at, SchedulerJobModel.id)
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    for job in claimed_jobs:
+        # Ensure the ORM row agrees with the atomic claim update above.
+        job.updated_at = occurred_at
     session.flush()
     return claimed_jobs
 
@@ -171,7 +250,14 @@ def _execute_claimed_scheduler_job(
         )
         return True
     if job.job_type == SchedulerJobType.timer_start.value:
-        _execute_timer_start_job(
+        _schedule_timer_start_occurrence(
+            session,
+            job=job,
+            occurred_at=occurred_at,
+        )
+        return True
+    if job.job_type == SchedulerJobType.timer_start_occurrence.value:
+        _execute_timer_start_occurrence(
             session,
             job=job,
             occurred_at=occurred_at,
@@ -269,7 +355,7 @@ def _execute_process_retry_job(
     )
 
 
-def _execute_timer_start_job(
+def _schedule_timer_start_occurrence(
     session: Session,
     *,
     job: SchedulerJobModel,
@@ -298,26 +384,100 @@ def _execute_timer_start_job(
         return
 
     timer_task_payload = _scheduler_job_timer_task(job.payload_json)
-    process_id = timer_task_payload.get("bpmn_process_id")
-    system_user = _ensure_timer_start_system_user(
+    task_spec_name = _scheduler_job_task_spec_name(timer_task_payload)
+    occurrence_at = _timer_start_occurrence_at(timer_task_payload)
+    occurrence_key_suffix = sha256(
+        f"{job.job_key}|{occurrence_at.isoformat()}".encode()
+    ).hexdigest()
+    upsert_scheduler_job(
         session,
         tenant_id=job.m8f_tenant_id,
-        occurred_at=occurred_at,
-    )
-    _initialize_process_instance_from_timer_start_definition(
-        session,
-        tenant_id=job.m8f_tenant_id,
-        process_definition_id=job.bpmn_process_definition_id,
-        process_initiator_id=system_user.id,
-        timer_start_task_spec_name=_scheduler_job_task_spec_name(timer_task_payload),
-        bpmn_process_id=process_id if isinstance(process_id, str) else None,
-        started_at=occurred_at,
+        job_key=(
+            f"timer_start_occurrence|pd:{job.bpmn_process_definition_id}"
+            f"|q:{occurrence_key_suffix}"
+        ),
+        job_type=SchedulerJobType.timer_start_occurrence,
+        bpmn_process_definition_id=job.bpmn_process_definition_id,
+        run_at=job.run_at,
+        payload_json={
+            "scheduled_from": "timer_start_runtime",
+            "occurrence_at": occurrence_at.isoformat(),
+            "timer_task": timer_task_payload,
+            "task_spec_name": task_spec_name,
+        },
+        updated_at=occurred_at,
+        created_at=occurred_at,
     )
     _reschedule_or_delete_timer_start_job(
         session,
         job=job,
         timer_task_payload=timer_task_payload,
         occurred_at=occurred_at,
+    )
+
+
+def _execute_timer_start_occurrence(
+    session: Session,
+    *,
+    job: SchedulerJobModel,
+    occurred_at: datetime,
+) -> None:
+    if job.bpmn_process_definition_id is None:
+        delete_scheduler_job(
+            session,
+            tenant_id=job.m8f_tenant_id,
+            job_key=job.job_key,
+        )
+        return
+
+    process_definition = session.scalar(
+        select(BpmnProcessDefinitionModel).where(
+            BpmnProcessDefinitionModel.m8f_tenant_id == job.m8f_tenant_id,
+            BpmnProcessDefinitionModel.id == job.bpmn_process_definition_id,
+        )
+    )
+    if process_definition is None or process_definition.source_bpmn_xml is None:
+        delete_scheduler_job(
+            session,
+            tenant_id=job.m8f_tenant_id,
+            job_key=job.job_key,
+        )
+        return
+
+    timer_task_payload = _scheduler_job_timer_task(job.payload_json)
+    occurrence_at_value = (
+        job.payload_json.get("occurrence_at")
+        if isinstance(job.payload_json, Mapping)
+        else None
+    )
+    if not isinstance(occurrence_at_value, str):
+        raise ValidationError("Timer start occurrence is missing its due timestamp")
+    system_user = _ensure_timer_start_system_user(
+        session,
+        tenant_id=job.m8f_tenant_id,
+        occurred_at=occurred_at,
+    )
+    process_id = timer_task_payload.get("bpmn_process_id")
+    try:
+        _initialize_process_instance_from_timer_start_definition(
+            session,
+            tenant_id=job.m8f_tenant_id,
+            process_definition_id=job.bpmn_process_definition_id,
+            process_initiator_id=system_user.id,
+            timer_start_task_spec_name=_scheduler_job_task_spec_name(
+                timer_task_payload
+            ),
+            bpmn_process_id=process_id if isinstance(process_id, str) else None,
+            started_at=occurred_at,
+        )
+    except (ServiceTaskExecutionError, CompensationExecutionError):
+        # A failed automatic step is a completed timer occurrence. The runtime
+        # has persisted the failed instance in this transaction; do not replay it.
+        pass
+    delete_scheduler_job(
+        session,
+        tenant_id=job.m8f_tenant_id,
+        job_key=job.job_key,
     )
 
 
@@ -333,6 +493,18 @@ def _release_scheduler_job_lock(
 
     existing_job.locked_by = None
     existing_job.locked_at = None
+    due_cadence_exists = session.scalar(
+        select(SchedulerJobModel.id)
+        .where(
+            SchedulerJobModel.job_type == SchedulerJobType.timer_start,
+            SchedulerJobModel.run_at <= updated_at,
+        )
+        .limit(1)
+    )
+    if existing_job.run_at <= updated_at and due_cadence_exists is not None:
+        # Defer a failed job briefly so a permanently failing oldest job does
+        # not monopolize every poll or spin at the scheduler's poll frequency.
+        existing_job.run_at = updated_at + _SCHEDULER_FAILURE_RETRY_DELAY
     existing_job.updated_at = updated_at
     session.flush()
 
@@ -495,7 +667,7 @@ def _next_timer_start_task_payload_after_fire(
         )
 
     cycles_value = current_event_value.get("cycles")
-    if cycles_value is None:
+    if cycles_value is None or (type(cycles_value) is int and cycles_value < 0):
         remaining_cycles: int | None = None
     elif type(cycles_value) is int and cycles_value > 1:
         remaining_cycles = cycles_value - 1
@@ -518,6 +690,20 @@ def _next_timer_start_task_payload_after_fire(
     next_payload["event_value"] = next_event_value
     next_payload["run_at_in_seconds"] = _timer_event_run_at_in_seconds(next_event_value)
     return next_payload
+
+
+def _timer_start_occurrence_at(timer_task_payload: Mapping[str, object]) -> datetime:
+    event_value = timer_task_payload.get("event_value")
+    due_at_value: object | None
+    if isinstance(event_value, str):
+        due_at_value = event_value
+    elif isinstance(event_value, Mapping):
+        due_at_value = event_value.get("next")
+    else:
+        due_at_value = None
+    if not isinstance(due_at_value, str) or not due_at_value:
+        raise ValidationError("Timer start payload is missing its due timestamp")
+    return _parse_scheduler_job_due_at(due_at_value)
 
 
 def _parse_scheduler_job_due_at(value: str) -> datetime:

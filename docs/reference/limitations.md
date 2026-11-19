@@ -85,8 +85,10 @@ from Celery.
 
 Missing:
 
-- **Multi-worker coordination.** Run one poller per database or per tenant.
-  Several workers claiming the same jobs isn't safe yet.
+- **Same-instance multi-worker coordination.** Workers avoid claiming the
+  same scheduler job on databases with row-level skip-locked support, but
+  distinct jobs that mutate one process instance aren't serialized together.
+  SQLite ignores those locks, so use one poller with SQLite.
 - **A library-owned Celery dispatcher.** The repository has a Celery example,
   not a supported Celery integration.
 - **Reminder and escalation jobs.** Boundary-timer timeout paths work, but
