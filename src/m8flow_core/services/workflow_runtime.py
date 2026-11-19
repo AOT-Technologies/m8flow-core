@@ -1370,12 +1370,15 @@ def _failed_task(workflow: BpmnWorkflow, exc: Exception) -> Any:
     if task is not None:
         return task
     # A connector error escapes Spiff without its task; it is the one in ERROR.
-    errored = [
-        task
+    # The top workflow's task list already includes sub-process tasks, so key by
+    # id: counted twice, a failure in a sub-process or called process was never
+    # routed to its boundary.
+    errored = {
+        task.id: task
         for scope in (workflow, *workflow.subprocesses.values())
         for task in scope.get_tasks(state=TaskState.ERROR)
-    ]
-    return errored[0] if len(errored) == 1 else None
+    }
+    return next(iter(errored.values())) if len(errored) == 1 else None
 
 
 def _nearest_error_catcher(failed: Any, code: str) -> Any:
