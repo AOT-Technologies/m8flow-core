@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Signal persistence and subscriptions without orchestration dependencies.
 
 The caller owns the transaction. Run one delivery loop per tenant.
@@ -631,11 +636,11 @@ def bind_signal_runtime(
     workflow._m8f_signal_publisher = publish
 
 
-def lock_signal_instance(
+def lock_event_instance(
     session: Session,
     instance: ProcessInstanceModel,
 ) -> ProcessInstanceModel:
-    """Serialize mutations of signal recipients without changing other runtimes.
+    """Serialize mutations of signal and message recipients.
 
     Non-signal service workflows retain their independent failure-persistence
     path, which cannot run while their caller holds a process-row lock.
@@ -643,7 +648,13 @@ def lock_signal_instance(
     definition = instance.bpmn_process_definition
     source = definition.source_bpmn_xml if definition is not None else None
     has_signal = bool(source and "signalEventDefinition" in source)
-    if not has_signal:
+    has_message = bool(
+        definition is not None
+        and definition.collaboration_metadata is None
+        and source
+        and "messageEventDefinition" in source
+    ) or ("RuntimeMessageDefinition" in (instance.workflow_state_json or ""))
+    if not has_signal and not has_message:
         has_signal = (
             session.scalar(
                 select(SignalSubscriptionModel.id)
@@ -655,7 +666,7 @@ def lock_signal_instance(
             )
             is not None
         )
-    if not has_signal:
+    if not has_signal and not has_message:
         return instance
     session.flush()
     session.scalar(

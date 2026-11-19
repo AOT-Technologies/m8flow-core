@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """BPMN error and escalation catch semantics for SpiffWorkflow (M8F-665).
 
 Instance-local adapters: no Spiff classes are patched globally.

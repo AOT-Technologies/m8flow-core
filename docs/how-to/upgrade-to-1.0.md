@@ -1,9 +1,18 @@
+<!--
+SPDX-FileCopyrightText: 2026 AOT Technologies
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Upgrade to 1.0
 
 This guide moves an application from `m8flow-bpmn-core` 0.x to m8flow-core
 1.0. The release renames the package and finishes a breaking schema and API
 redesign, so the upgrade changes your code, your dependencies, and your
 database. Plan it as one coordinated deployment.
+
+If you already run a 1.0.0 beta (`1.0.0b1` to `1.0.0b3`), skip to
+[Upgrade from a 1.0.0 beta](#upgrade-from-a-100-beta).
 
 ## Before you begin
 
@@ -114,7 +123,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-The second command should report `m8f_instance_process_tenant` as the head.
+The second command should report `m8f_694_message_correlation` as the head.
 
 ### Upgrade a database that already uses 1.0 migrations
 
@@ -122,8 +131,9 @@ Run `alembic upgrade head` from the baseline or from an existing
 collaboration, signal, or compensation revision. Alembic applies any missing
 revisions, joins the two migration branches at `m8f_merge_runtime`, and
 enforces same-tenant references from instances to their BPMN definitions
-and processes. If the migration reports an invalid instance reference,
-correct it before rerunning `alembic upgrade head`. No stamp is needed.
+and processes before adding the external message subscription and receipt
+tables. If a migration reports an invalid instance reference, correct it
+before rerunning `alembic upgrade head`. No stamp is needed.
 
 The revision ID alone doesn't prove the tables match the 1.0 models. A
 database built before the baseline can still differ in details such as extra
@@ -191,6 +201,30 @@ m8flow runs its own migration chain alongside the library's. Deploy the
 matching m8flow release and library together. Convert the library tables to
 the 1.0 baseline before stamping `k2l3m4n5o6p7`, then apply the later revisions
 required by the version you are deploying.
+
+## Upgrade from a 1.0.0 beta
+
+The betas already use the m8flow-core names, the 1.0 API, and the baseline
+revision `k2l3m4n5o6p7`. 1.0.0 adds BPMN signals and compensation, with one
+additive migration for each. To upgrade, follow these steps:
+
+1. Change your dependency to `m8flow-core>=1.0,<2.0`. A version pin such as
+   `==1.0.0b3` doesn't pick up the final release on its own.
+2. Back up the database, then run `uv run alembic upgrade head`. It applies
+   `l3m4n5o6p7q8`, which adds the signal registry tables, and
+   `m8f_671_compensation`, which adds the compensation journal tables. No
+   stamp is needed.
+3. Run `uv run alembic current` and check that it reports
+   `m8f_671_compensation`.
+4. Re-run `ensure_v1_role` for each tenant's existing `manager` and `admin`
+   roles, so they get the new `signal.publish` grant. See
+   [Customize authorization](customize-authorization.md).
+5. If your application calls a connector from a compensation handler, use the
+   `compensation.idempotency_key` in `ServiceTaskContext.metadata` to avoid
+   repeating an external operation on retry. See
+   [Run compensation handlers](run-compensation.md).
+
+The [changelog](../../CHANGELOG.md) lists everything in 1.0.0.
 
 ## If the upgrade fails
 

@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 import re
@@ -10,6 +15,7 @@ from SpiffWorkflow.util.task import TaskState
 from m8flow_core.application.commands import (
     ClaimTaskCommand,
     CompleteTaskCommand,
+    CorrelateMessageCommand,
     CreateProcessInstanceCommand,
     ImportBpmnProcessDefinitionCommand,
     InitializeProcessInstanceFromDefinitionCommand,
@@ -51,6 +57,15 @@ from m8flow_core.models.work_item import WorkItemModel
 from m8flow_core.services.work_items import WorkItemState
 
 EXPECTED_COMMAND_FIELDS = {
+    CorrelateMessageCommand: [
+        "tenant_id",
+        "message_name",
+        "user_id",
+        "delivery_id",
+        "payload",
+        "process_definition_id",
+        "process_instance_id",
+    ],
     PublishSignalCommand: [
         "tenant_id",
         "signal_name",

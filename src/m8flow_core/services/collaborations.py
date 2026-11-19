@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 import re
@@ -103,6 +108,20 @@ def read_collaboration(source: bytes) -> dict[str, Any] | None:
     executable_ids = [
         process_id for process_id in participant_by_process if process_id in executable
     ]
+    if (
+        len(executable_ids) == len(executable) == len(participant_by_process) == 1
+        and (process := processes[executable_ids[0]]).find(
+            _BPMN + "correlationSubscription"
+        )
+        is not None
+        and process.find(
+            f".//{_BPMN}intermediateCatchEvent/{_BPMN}messageEventDefinition"
+        )
+        is not None
+    ):
+        # A single process can model an external sender as a black-box pool.
+        # The single-process import path validates its external correlation.
+        return None
     if len(executable_ids) < 2:
         raise ValidationError(
             "A collaboration deployment requires two executable participant processes"

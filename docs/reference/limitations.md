@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AOT Technologies
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Limitations
 
 m8flow-core is a workflow core, not a full m8flow or SpiffArena
@@ -120,16 +126,24 @@ The library supports tenant-scoped BPMN signal publication. Hosts run one
 signal delivery loop per tenant; multi-worker signal delivery and external
 broker delivery are not supported. See [Publish signals](../how-to/publish-signals.md).
 
+In single-process definitions, BPMN intermediate catches support synchronous
+external delivery by a modeled correlation key. See
+[Correlate external BPMN messages](../how-to/correlate-messages.md).
+
 Missing:
 
 - **Signal starts for collaboration participants**. Signal starts are supported
   for single-process definitions.
-- **Model-defined correlation expressions and business payload mappings**,
-  such as extracting `order_id` from a message.
+- **Model-defined payload mappings for cross-pool flows**. These flows use
+  the caller-supplied instance key.
 - **Other executable endpoints**, such as send and receive tasks, message
-  boundary events, and message events inside subprocesses.
-- **Inbound message routing**, an entry point that turns a webhook or event-bus
-  message into "resume this instance at this catch event".
+  boundary events, message event subprocesses, and cross-pool messages to
+  events inside subprocesses.
+- **External message starts** and **buffered external delivery** to catches
+  that only start waiting after the message arrives.
+- **Webhook and event-bus transport**. The host calls the core API to
+  deliver an external message.
+- **Camunda business-key and REST compatibility**.
 - **Outbound delivery** of thrown messages and signals to email, Kafka, or
   other subscribers.
 

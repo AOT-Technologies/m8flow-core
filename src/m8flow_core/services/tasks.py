@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -177,12 +182,12 @@ def complete_task(
 ) -> WorkItemModel:
     ensure_user_belongs_to_tenant(session, tenant_id=tenant_id, user_id=user_id)
     item = _load_work_item(session, tenant_id=tenant_id, work_item_id=work_item_id)
-    lock_collaboration_instance(session, item.process_instance)
-    from m8flow_core.services.signal_registry import lock_signal_instance
+    from m8flow_core.services.signal_registry import lock_event_instance
 
     instance = session.get(ProcessInstanceModel, item.process_instance_id)
     if instance is not None:
-        lock_signal_instance(session, instance)
+        lock_collaboration_instance(session, instance)
+        lock_event_instance(session, instance)
     session.refresh(item)
     require_command_authorization(
         session,

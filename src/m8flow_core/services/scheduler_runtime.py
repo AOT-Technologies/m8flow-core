@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -270,9 +275,7 @@ def _execute_claimed_scheduler_job(
             session, job=job, occurred_at=occurred_at
         )
 
-    raise ValidationError(
-        f"Scheduler job type {job.job_type!r} is not executable yet"
-    )
+    raise ValidationError(f"Scheduler job type {job.job_type!r} is not executable yet")
 
 
 def _execute_intermediate_timer_job(
@@ -517,8 +520,7 @@ def _build_scheduler_batch_error(
     batch_errors: list[tuple[str, BpmnCoreError]],
 ) -> BpmnCoreError:
     error_details = ", ".join(
-        f"{job_key}: {type(error).__name__}: {error}"
-        for job_key, error in batch_errors
+        f"{job_key}: {type(error).__name__}: {error}" for job_key, error in batch_errors
     )
     summary_error = BpmnCoreError(
         f"{len(batch_errors)} scheduler jobs failed in one batch: {error_details}"
@@ -547,9 +549,7 @@ def _scheduler_job_user_id(
 
     actor_user_id = payload_json.get(key)
     if type(actor_user_id) is not int:
-        raise ValidationError(
-            f"Scheduler job payload is missing integer field {key!r}"
-        )
+        raise ValidationError(f"Scheduler job payload is missing integer field {key!r}")
     return actor_user_id
 
 
@@ -577,15 +577,11 @@ def _ensure_timer_start_system_user(
     occurred_at: datetime,
 ) -> UserModel:
     tenant = session.scalar(
-        select(M8flowTenantModel).where(
-            M8flowTenantModel.id == tenant_id
-        )
+        select(M8flowTenantModel).where(M8flowTenantModel.id == tenant_id)
     )
     if tenant is None:
         tenant = session.scalar(
-            select(M8flowTenantModel).where(
-                M8flowTenantModel.slug == tenant_id
-            )
+            select(M8flowTenantModel).where(M8flowTenantModel.slug == tenant_id)
         )
     if tenant is None:
         raise NotFoundError(f"Tenant {tenant_id} was not found")
@@ -640,15 +636,16 @@ def _reschedule_or_delete_timer_start_job(
         )
         return
 
+    next_run_at_in_seconds = next_timer_task_payload["run_at_in_seconds"]
+    if not isinstance(next_run_at_in_seconds, int | float):
+        raise ValidationError("Recurring timer start payload has no run_at_in_seconds")
     upsert_scheduler_job(
         session,
         tenant_id=job.m8f_tenant_id,
         job_key=job.job_key,
         job_type=SchedulerJobType.timer_start,
         bpmn_process_definition_id=job.bpmn_process_definition_id,
-        run_at=datetime.fromtimestamp(
-            float(next_timer_task_payload["run_at_in_seconds"]), UTC
-        ),
+        run_at=datetime.fromtimestamp(float(next_run_at_in_seconds), UTC),
         payload_json={
             "scheduled_from": "timer_start_runtime",
             "timer_task": next_timer_task_payload,
@@ -698,9 +695,7 @@ def _next_timer_start_task_payload_after_fire(
 
     next_payload = dict(timer_task_payload)
     next_payload["event_value"] = next_event_value
-    next_payload["run_at_in_seconds"] = _timer_event_run_at_in_seconds(
-        next_event_value
-    )
+    next_payload["run_at_in_seconds"] = _timer_event_run_at_in_seconds(next_event_value)
     return next_payload
 
 

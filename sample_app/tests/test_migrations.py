@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,7 +34,7 @@ COMPENSATION_TABLES = {"compensation_scope", "compensation_run", "compensation_r
 COLLABORATION_REVISION = "20261112_0005"
 COLLABORATION_INDEX = "ix_process_instance_collaboration_lookup"
 COLLABORATION_FK = "fk_process_instance_definition_tenant"
-HEAD_REVISION = "20261116_0006"
+HEAD_REVISION = "20261117_0007"
 PROCESS_TENANT_INDEX = "m8f_bpmn_process_tenant_id_key"
 PROCESS_TENANT_FK = "fk_process_instance_process_tenant"
 PARENT_INDEXES = {
@@ -126,15 +131,19 @@ def test_upgrade_existing_sample_app_adds_collaboration_schema(migration_databas
     )
     assert any(
         index["name"] == COLLABORATION_INDEX
-        and index["column_names"] == [
-            "m8f_tenant_id", "bpmn_process_definition_id", "bpmn_version_id",
+        and index["column_names"]
+        == [
+            "m8f_tenant_id",
+            "bpmn_process_definition_id",
+            "bpmn_version_id",
             "collaboration_correlation_key",
         ]
         for index in inspector.get_indexes("process_instance")
     )
     assert any(
         key["name"] == COLLABORATION_FK
-        and key["constrained_columns"] == ["m8f_tenant_id", "bpmn_process_definition_id"]
+        and key["constrained_columns"]
+        == ["m8f_tenant_id", "bpmn_process_definition_id"]
         and key["referred_table"] == "bpmn_process_definition"
         and key["referred_columns"] == ["m8f_tenant_id", "id"]
         for key in inspector.get_foreign_keys("process_instance")
@@ -350,6 +359,8 @@ def test_migrations_reuse_existing_secret_table_and_foreign_alembic_state(
         "compensation_scope",
         "compensation_run",
         "compensation_record",
+        "message_subscription",
+        "message_delivery_receipt",
         "m8flow_sample_app_alembic_version",
     }.issubset(inspector.get_table_names())
 

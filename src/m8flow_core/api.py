@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Public library API for the platform/app layer.
 
 This package is intended to be imported directly, not exposed over HTTP.
@@ -22,6 +27,7 @@ from sqlalchemy.orm import Session
 from m8flow_core.application import (
     ClaimTaskCommand,
     CompleteTaskCommand,
+    CorrelateMessageCommand,
     CreateProcessInstanceCommand,
     ErrorProcessInstanceCommand,
     GetPendingTasksQuery,
@@ -52,16 +58,19 @@ from m8flow_core.application import (
 )
 from m8flow_core.application.dispatcher import _session_scope
 from m8flow_core.errors import (
+    AmbiguousMessageCorrelationError,
     AuthorizationError,
     BpmnCoreError,
     CallActivityResolutionError,
     CompensationExecutionError,
     InvalidStateError,
+    MessageDeliveryConflictError,
     NotFoundError,
     ServiceTaskExecutionError,
     ValidationError,
 )
 from m8flow_core.models.compensation import CompensationStatus
+from m8flow_core.models.messages import MessageDeliveryReceiptModel
 from m8flow_core.models.process_instance import ProcessInstanceStatus
 from m8flow_core.models.process_instance_event import (
     ProcessInstanceEventCategory,
@@ -70,6 +79,7 @@ from m8flow_core.models.process_instance_event import (
 )
 from m8flow_core.models.signals import SignalDeliveryModel, SignalPublicationModel
 from m8flow_core.services.authorization import (
+    MESSAGE_CORRELATE_COMMAND,
     PROCESS_DEFINITION_IMPORT_COMMAND,
     PROCESS_RESUME_COMMAND,
     PROCESS_RETRY_COMMAND,
@@ -101,6 +111,7 @@ from m8flow_core.services.connector_proxy_service_tasks import (
     fetch_connector_proxy_command_definitions,
 )
 from m8flow_core.services.lane_assignment import resolve_lane_assignment_id
+from m8flow_core.services.message_model import validate_message_bpmn
 from m8flow_core.services.process_instance_reactivation import (
     resume_process_instance,
     retry_process_instance,
@@ -162,44 +173,68 @@ from m8flow_core.services.workflow_runtime import (
 
 
 def publish_signal(
-    session_or_connection: Session | Connection, *, tenant_id: str,
-    signal_name: str, user_id: int, occurrence_id: str, payload: Any = None,
+    session_or_connection: Session | Connection,
+    *,
+    tenant_id: str,
+    signal_name: str,
+    user_id: int,
+    occurrence_id: str,
+    payload: Any = None,
     published_at: datetime | None = None,
 ) -> SignalPublicationModel:
     with _session_scope(session_or_connection) as session:
         return _publish_signal(
-            session, tenant_id=tenant_id, signal_name=signal_name, user_id=user_id,
-            occurrence_id=occurrence_id, payload=payload, published_at=published_at,
+            session,
+            tenant_id=tenant_id,
+            signal_name=signal_name,
+            user_id=user_id,
+            occurrence_id=occurrence_id,
+            payload=payload,
+            published_at=published_at,
         )
 
 
 def run_signal_deliveries(
-    session_or_connection: Session | Connection, *, tenant_id: str,
-    limit: int = 100, now: datetime | None = None,
+    session_or_connection: Session | Connection,
+    *,
+    tenant_id: str,
+    limit: int = 100,
+    now: datetime | None = None,
 ) -> list[SignalDeliveryModel]:
     with _session_scope(session_or_connection) as session:
         return _run_signal_deliveries(
-            session, tenant_id=tenant_id, limit=limit, now=now,
+            session,
+            tenant_id=tenant_id,
+            limit=limit,
+            now=now,
         )
 
 
 def get_signal_publication(
-    session_or_connection: Session | Connection, *,
-    tenant_id: str, occurrence_id: str,
+    session_or_connection: Session | Connection,
+    *,
+    tenant_id: str,
+    occurrence_id: str,
 ) -> SignalPublicationModel:
     with _session_scope(session_or_connection) as session:
         return _get_signal_publication(
-            session, tenant_id=tenant_id, occurrence_id=occurrence_id,
+            session,
+            tenant_id=tenant_id,
+            occurrence_id=occurrence_id,
         )
 
 
 def list_signal_deliveries(
-    session_or_connection: Session | Connection, *,
-    tenant_id: str, occurrence_id: str,
+    session_or_connection: Session | Connection,
+    *,
+    tenant_id: str,
+    occurrence_id: str,
 ) -> list[SignalDeliveryModel]:
     with _session_scope(session_or_connection) as session:
         return _list_signal_deliveries(
-            session, tenant_id=tenant_id, occurrence_id=occurrence_id,
+            session,
+            tenant_id=tenant_id,
+            occurrence_id=occurrence_id,
         )
 
 
@@ -222,10 +257,21 @@ def run_due_scheduler_jobs(
 
 
 __all__ = [
-    "PublishSignalCommand", "RunSignalDeliveriesCommand",
-    "GetSignalPublicationQuery", "ListSignalDeliveriesQuery",
-    "SIGNAL_PUBLISH_COMMAND", "publish_signal", "run_signal_deliveries",
-    "get_signal_publication", "list_signal_deliveries",
+    "CorrelateMessageCommand",
+    "MessageDeliveryReceiptModel",
+    "AmbiguousMessageCorrelationError",
+    "MessageDeliveryConflictError",
+    "MESSAGE_CORRELATE_COMMAND",
+    "validate_message_bpmn",
+    "PublishSignalCommand",
+    "RunSignalDeliveriesCommand",
+    "GetSignalPublicationQuery",
+    "ListSignalDeliveriesQuery",
+    "SIGNAL_PUBLISH_COMMAND",
+    "publish_signal",
+    "run_signal_deliveries",
+    "get_signal_publication",
+    "list_signal_deliveries",
     "AuthorizationError",
     "AuthorizationDecision",
     "AuthorizationPolicy",

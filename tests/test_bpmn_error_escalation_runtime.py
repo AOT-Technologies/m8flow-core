@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Error and escalation event subprocesses through the core API (M8F-665).
 
 These run on real persistence: work items of cancelled user tasks leave the
@@ -36,9 +41,7 @@ from test_bpmn_error_escalation_standards import (
 REVIEW = '<bpmn:userTask id="Review" name="Review" />'
 
 
-def _seed(
-    session: Session, tenant_id: str
-) -> tuple[M8flowTenantModel, UserModel]:
+def _seed(session: Session, tenant_id: str) -> tuple[M8flowTenantModel, UserModel]:
     tenant = M8flowTenantModel(id=tenant_id, name=tenant_id, slug=tenant_id)
     user = UserModel(
         username="reviewer",
@@ -116,9 +119,9 @@ def _review_beside_escalation(*, interrupting: bool) -> str:
         '<bpmn:endEvent id="ReviewEnd" />'
         f'<bpmn:intermediateThrowEvent id="Throw">{ESCALATION}'
         '</bpmn:intermediateThrowEvent><bpmn:endEvent id="ThrowEnd" />'
-        f'{_flow("f1", "Mark", "Split")}{_flow("f2", "Split", "Review")}'
-        f'{_flow("f3", "Review", "ReviewEnd")}{_flow("f4", "Split", "Throw")}'
-        f'{_flow("f5", "Throw", "ThrowEnd")}'
+        f"{_flow('f1', 'Mark', 'Split')}{_flow('f2', 'Split', 'Review')}"
+        f"{_flow('f3', 'Review', 'ReviewEnd')}{_flow('f4', 'Split', 'Throw')}"
+        f"{_flow('f5', 'Throw', 'ThrowEnd')}"
         + _handler("Notify", ESCALATION, "outer_handled", interrupting=interrupting)
     )
 
@@ -146,8 +149,8 @@ def test_escalation_event_subprocess_and_a_waiting_user_task(
 ERROR_AFTER_REVIEW = _bpmn(
     f"{MAIN_START}{REVIEW}{_work(_error_end(ERROR('ErrB')))}"
     f'{_script("After", "main_done = True")}<bpmn:endEvent id="EndEvent" />'
-    f'{_flow("f1", "Mark", "Review")}{_flow("f2", "Review", "Work")}'
-    f'{_flow("f3", "Work", "After")}{_flow("f4", "After", "EndEvent")}'
+    f"{_flow('f1', 'Mark', 'Review')}{_flow('f2', 'Review', 'Work')}"
+    f"{_flow('f3', 'Work', 'After')}{_flow('f4', 'After', 'EndEvent')}"
     + _handler("OnError", ERROR("ErrB"), "outer_handled")
 )
 

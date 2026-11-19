@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Domain error hierarchy for the m8flow-core public API.
 
 Every error raised by a public service or dispatcher path is a subclass of
@@ -26,6 +31,14 @@ class InvalidStateError(ValidationError):
     Examples: suspending a terminal process instance, resuming one that is not
     suspended, claiming a completed task.
     """
+
+
+class AmbiguousMessageCorrelationError(InvalidStateError):
+    """More than one waiting catch matches the message."""
+
+
+class MessageDeliveryConflictError(InvalidStateError):
+    """A committed delivery ID was reused with different inputs."""
 
 
 class AuthorizationError(BpmnCoreError, PermissionError):
@@ -61,11 +74,13 @@ class CallActivityResolutionError(ValidationError):
 
 
 __all__ = [
+    "AmbiguousMessageCorrelationError",
     "AuthorizationError",
     "BpmnCoreError",
     "CallActivityResolutionError",
     "CompensationExecutionError",
     "InvalidStateError",
+    "MessageDeliveryConflictError",
     "NotFoundError",
     "ServiceTaskExecutionError",
     "ValidationError",

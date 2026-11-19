@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AOT Technologies
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # BPMN support
 
 This page lists the BPMN 2.0 and DMN elements that m8flow-core runs and
@@ -19,9 +25,9 @@ A definition must meet the following rules:
 - A definition can include one DMN file next to the BPMN, imported with
   `source_dmn_xml`.
 - Collaborations with one participant and its lane set are supported.
-- A collaboration with multiple pools and fewer than two executable
-  participant processes is rejected at import. Additional black-box pools are
-  allowed when two executable participants are present.
+- A cross-pool collaboration requires at least two executable participants.
+  A single executable process can also use black-box pools to model external
+  senders when its message catches declare BPMN correlation keys.
 
 ## Supported elements
 
@@ -32,7 +38,7 @@ The following elements are supported:
 | Start event (none) | |
 | End event (none) | |
 | Message Start Event | Starts a participant through a direct, modeled cross-pool Message Flow. |
-| Intermediate Message Catch Event | Waits for a modeled message and an exact correlation-key match. |
+| Intermediate Message Catch Event | Waits for a modeled cross-pool message or, in a single-process definition, [an external message](../how-to/correlate-messages.md). Each uses its own correlation key. |
 | Intermediate Message Throw Event and Message End Event | Queue a scheduler job for each modeled route to a supported event. |
 | Signal intermediate/end throw | Publishes successfully with zero or more listeners; local delivery is immediate |
 | Signal intermediate catch | Receives matching publications while waiting |
@@ -117,6 +123,7 @@ names that exist in the BPMN, and none of them may also be a key in
 The following elements and behaviors aren't covered:
 
 - Message routing beyond the supported collaboration event pairs
+- External message delivery to starts, boundary events, and event subprocesses
 - Signal starts for collaboration participants
 - Event subprocesses, other than the documented timer, signal, error and
   escalation forms

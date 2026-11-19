@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Spiff engine construction and serialization, independent of orchestration."""
 
 from __future__ import annotations
@@ -48,6 +53,12 @@ from m8flow_core.services.error_escalation_runtime import (
     EventSubprocessStartEventParser,
     install_scoped_error_escalation_throw,
 )
+from m8flow_core.services.message_model import MessageCatch, read_message_catches
+from m8flow_core.services.message_runtime import (
+    MessageCatchParser,
+    RuntimeMessageConverter,
+    RuntimeMessageDefinition,
+)
 from m8flow_core.services.multi_instance_runtime import (
     adapt_multi_instance_specs,
     configure_multi_instance_serializer,
@@ -73,6 +84,7 @@ _WORKFLOW_SERIALIZER = BpmnWorkflowSerializer(
             CompensationThrow: CompensationEventConverter,
             CompensationEnd: CompensationEventConverter,
             TransactionCancelEnd: EventConverter,
+            RuntimeMessageDefinition: RuntimeMessageConverter,
         }
     ),
     version=_WORKFLOW_STATE_SERIALIZER_VERSION,
@@ -96,6 +108,12 @@ class _RuntimeSpiffBpmnParser(CompensationBpmnParser):
 
     OVERRIDE_PARSER_CLASSES = {
         **CompensationBpmnParser.OVERRIDE_PARSER_CLASSES,
+        full_tag("intermediateCatchEvent"): (
+            MessageCatchParser,
+            CompensationBpmnParser.OVERRIDE_PARSER_CLASSES[
+                full_tag("intermediateCatchEvent")
+            ][1],
+        ),
         full_tag("startEvent"): (
             EventSubprocessStartEventParser,
             CompensationBpmnParser.OVERRIDE_PARSER_CLASSES[full_tag("startEvent")][1],
@@ -103,10 +121,26 @@ class _RuntimeSpiffBpmnParser(CompensationBpmnParser):
     }
 
     def __init__(
-        self, *args: Any, use_noop_dmn_engine: bool = True, **kwargs: Any
+        self,
+        *args: Any,
+        use_noop_dmn_engine: bool = True,
+        manage_external_messages: bool = True,
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._use_noop_dmn_engine = use_noop_dmn_engine
+        self._manage_external_messages = manage_external_messages
+        self.message_catches: dict[tuple[str, str], MessageCatch] = {}
+
+    def add_bpmn_str(self, bpmn_str: bytes, filename: str | None = None) -> None:
+        if self._manage_external_messages and b"messageEventDefinition" in bpmn_str:
+            try:
+                self.message_catches.update(read_message_catches(bpmn_str))
+            except ValidationError:
+                # New imports are validated separately. Previously stored
+                # unmanaged models can still restore their native Spiff specs.
+                pass
+        super().add_bpmn_str(bpmn_str, filename=filename)
 
     def get_engine(self, decision_ref: str, node: object) -> Any:
         if not self._use_noop_dmn_engine:
@@ -231,6 +265,7 @@ def _build_workflow(
     parser = _RuntimeSpiffBpmnParser(
         validator=None,
         use_noop_dmn_engine=dmn_xml is None,
+        manage_external_messages=collaboration is None,
     )
     source = _coerce_xml_bytes(bpmn_xml)
     parser.add_bpmn_str(

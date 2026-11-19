@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AOT Technologies
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Database schema
 
 This page lists the tables that m8flow-core's ORM models define. The library
@@ -8,12 +14,14 @@ no parent and builds the 1.0 schema on an empty database. The signal revision
 branch. The merge revision `m8f_merge_runtime` joins it with the collaboration
 revision `m8f_collaboration_01`. The following revisions,
 `m8f_instance_definition_tenant` and `m8f_instance_process_tenant`, enforce
-tenant ownership of an instance's definition and BPMN process. See
+tenant ownership of an instance's definition and BPMN process. The current
+head, `m8f_694_message_correlation`, adds external message correlation. See
 [Upgrade to 1.0](../how-to/upgrade-to-1.0.md) for existing databases.
 
 Table and column names are part of the compatibility contract, because host
 applications such as m8flow share the database. Renaming or removing one is a
-breaking change. Don't write to these tables directly; use the
+breaking change and ships only in a new major version; see the
+[versioning policy](versioning.md). Don't write to these tables directly; use the
 [public API](api.md).
 
 ## Conventions
@@ -53,6 +61,20 @@ The library defines the following tables:
 | `process_instance_metadata` | `ProcessInstanceMetadataModel` | Yes | Key and value pairs, including task payload values |
 | `scheduler_job` | `SchedulerJobModel` | Yes | Due timers, retries, and collaboration messages. [About scheduling](../explanation/scheduling.md#the-scheduler-job-table) lists its columns. |
 | `future_task` | `FutureTaskModel` | Yes | Runtime tasks waiting to run, with `run_at` and `queued_to_run_at` |
+
+## External message correlation
+
+| Table | Stable columns |
+|---|---|
+| `message_subscription` | `m8f_tenant_id`, `process_instance_id`, `task_guid`, `process_definition_id`, `message_name`, `property_paths`, `correlation_digest` |
+| `message_delivery_receipt` | `m8f_tenant_id`, `delivery_id`, `request_digest`, `process_instance_id`, `task_guid`, `outcome`, `delivered_at` |
+
+A subscription identifies a waiting task within a tenant and instance.
+`property_paths` holds the message retrieval paths by BPMN property ID.
+`correlation_digest` indexes the canonical, typed key. The subscription
+references its instance and definition through tenant-qualified foreign keys.
+Receipts use `(m8f_tenant_id, delivery_id)` as their primary key and retain
+the original target IDs so replay still works after an instance is purged.
 
 ## Collaboration correlation
 

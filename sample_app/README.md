@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AOT Technologies
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # m8flow-core sample app
 
 A small Flask web application that uses m8flow-core as a wheel
@@ -199,7 +205,8 @@ parent indexes they reference. Revision `20261110_0004` follows it and adds the
 three compensation journal tables. Revision `20261112_0005` adds the
 collaboration key, lookup index, and same-tenant definition reference.
 Revision `20261116_0006` adds a same-tenant reference to the instance's BPMN
-process. The sample app enables foreign-key enforcement on its SQLite
+process. Revision `20261117_0007` adds the external message subscription and
+receipt tables. The sample app enables foreign-key enforcement on its SQLite
 connections.
 Startup applies these revisions automatically.
 You can also run `uv run alembic upgrade head` from `sample_app/` before starting

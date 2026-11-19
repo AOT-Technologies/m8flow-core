@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 import ast
@@ -5,9 +10,9 @@ import hashlib
 import json
 import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
 from defusedxml import ElementTree
@@ -23,6 +28,7 @@ from SpiffWorkflow.bpmn.specs.mixins.events.start_event import StartEvent
 from SpiffWorkflow.bpmn.util import BpmnEvent
 from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
 from SpiffWorkflow.spiff.specs.event_definitions import MessageEventDefinition
+from SpiffWorkflow.task import Task
 from SpiffWorkflow.util.task import TaskState
 from sqlalchemy import delete, exists, select
 from sqlalchemy.engine import Connection, Engine
@@ -86,6 +92,10 @@ from m8flow_core.services.compensation_runtime import (
 )
 from m8flow_core.services.lane_assignment import (
     assign_work_item_potential_owners,
+)
+from m8flow_core.services.message_registry import (
+    has_managed_messages,
+    sync_instance_messages,
 )
 from m8flow_core.services.multi_instance_runtime import in_iteration
 from m8flow_core.services.process_instances import (
@@ -322,7 +332,7 @@ def initialize_process_instance_from_definition(
         session,
         tenant_id=tenant_id,
         process_instance_id=process_instance.id,
-        bpmn_xml=process_definition.source_bpmn_xml,
+        bpmn_xml=_require_source_bpmn_xml(process_definition),
         dmn_xml=process_definition.source_dmn_xml,
         bpmn_process_id=selected_process_id,
         started_at=started_at,
@@ -382,7 +392,7 @@ def _initialize_process_instance_from_timer_start_definition(
 
     occurred_at = _resolve_timestamp(started_at)
     workflow = _build_workflow(
-        bpmn_xml=process_definition.source_bpmn_xml,
+        bpmn_xml=_require_source_bpmn_xml(process_definition),
         dmn_xml=process_definition.source_dmn_xml,
         bpmn_process_id=selected_process_id,
         service_task_context=_service_task_execution_context(
@@ -495,7 +505,7 @@ def _start_collaboration_participant(
     )
     process_instance.collaboration_correlation_key = collaboration_correlation_key
     workflow = _build_workflow(
-        bpmn_xml=process_definition.source_bpmn_xml,
+        bpmn_xml=_require_source_bpmn_xml(process_definition),
         dmn_xml=process_definition.source_dmn_xml,
         bpmn_process_id=selected_process_id,
         service_task_context=_service_task_execution_context(
@@ -722,7 +732,8 @@ def _prepare_process_instance_from_definition(
     bpmn_process_id: str | None,
 ) -> tuple[ProcessInstanceModel, str]:
     # Publications, receipts and signal instances share the caller's transaction.
-    if "signalEventDefinition" in (process_definition.source_bpmn_xml or ""):
+    source = process_definition.source_bpmn_xml or ""
+    if "signalEventDefinition" in source or "messageEventDefinition" in source:
         return _prepare_process_instance_from_definition_in_session(
             session,
             tenant_id=tenant_id,
@@ -843,13 +854,12 @@ def _prepare_process_instance_from_definition_in_session(
     started_at: datetime | None,
     bpmn_process_id: str | None,
 ) -> tuple[ProcessInstanceModel, str]:
-    if process_definition.source_bpmn_xml is None:
-        raise ValidationError("Process definition does not include stored BPMN XML")
+    source_bpmn_xml = _require_source_bpmn_xml(process_definition)
 
     collaboration = process_definition.collaboration_metadata
     if collaboration is None:
         selected_process_id = _select_process_identifier(
-            process_definition.source_bpmn_xml, bpmn_process_id=bpmn_process_id
+            source_bpmn_xml, bpmn_process_id=bpmn_process_id
         )
     else:
         if bpmn_process_id is None:
@@ -1016,9 +1026,16 @@ def retry_errored_service_task_workflow_if_needed(
     )
     _apply_metadata_to_workflow(workflow, metadata)
 
-    compensation_retry = coordinator(workflow) and coordinator(workflow).retry(metadata)
-    errored_service_task_ids = [task.id for task in _errored_service_tasks(workflow)]
-    if not errored_service_task_ids and not compensation_retry:
+    comp = coordinator(workflow)
+    compensation_retry = comp is not None and comp.retry(metadata)
+    managed_messages = has_managed_messages(workflow)
+    failed_tasks = (
+        runtime_tasks(workflow, state=TaskState.ERROR)
+        if managed_messages
+        else _errored_service_tasks(workflow)
+    )
+    failed_task_ids = [task.id for task in failed_tasks]
+    if not failed_task_ids and not compensation_retry:
         return process_instance
 
     retry_task_data = dict(workflow.data)
@@ -1026,13 +1043,18 @@ def retry_errored_service_task_workflow_if_needed(
     if coordinator(workflow):
         # Preserve compensation throw occurrences and detached handler trees.
         # A branch reset can otherwise remove a throw that still owns undo work.
-        for task_id in errored_service_task_ids:
+        for task_id in failed_task_ids:
             task = runtime_task(workflow, task_id)
             task.data.update(metadata)
             task._set_state(TaskState.READY)
     elif not compensation_retry:
-        for task_id in errored_service_task_ids:
-            workflow.reset_from_task_id(task_id, data=retry_task_data)
+        for task_id in failed_task_ids:
+            # Keep the consumed catch's output and inputs to the failed task.
+            task_data = dict(retry_task_data)
+            if managed_messages:
+                task_data.update(runtime_task(workflow, task_id).data)
+                task_data.update(metadata)
+            workflow.reset_from_task_id(task_id, data=task_data)
 
     _run_workflow_with_service_task_failure_handling(
         session,
@@ -1256,10 +1278,11 @@ def repair_process_instance_runtime_representation(
 def _failure_state_may_use_independent_session(
     process_instance: ProcessInstanceModel, workflow: BpmnWorkflow
 ) -> bool:
-    """Keep collaboration, compensation, and signal failures transactional."""
+    """Keep collaboration, compensation, and event recovery transactional."""
     return (
         process_instance.collaboration_correlation_key is None
         and not coordinator(workflow)
+        and not has_managed_messages(workflow)
         and not any(
             isinstance(
                 getattr(task_spec, "event_definition", None), RuntimeSignalDefinition
@@ -1312,6 +1335,17 @@ def _run_workflow_with_service_task_failure_handling(
             run["status"] == "failed" for run in comp.state["runs"].values()
         ):
             exc.compensation_recovery_flushed = True
+        raise
+    except WorkflowTaskException as exc:
+        if has_managed_messages(workflow):
+            _transition_process_instance_to_error_for_failed_workflow_task(
+                session,
+                tenant_id=tenant_id,
+                process_instance=process_instance,
+                workflow=workflow,
+                occurred_at=occurred_at,
+                failed_task_guid=str(exc.task.id),
+            )
         raise
 
 
@@ -1369,12 +1403,15 @@ def _failed_task(workflow: BpmnWorkflow, exc: Exception) -> Any:
     if task is not None:
         return task
     # A connector error escapes Spiff without its task; it is the one in ERROR.
-    errored = [
-        task
+    # The top workflow's task list already includes sub-process tasks, so key by
+    # id: counted twice, a failure in a sub-process or called process was never
+    # routed to its boundary.
+    errored = {
+        task.id: task
         for scope in (workflow, *workflow.subprocesses.values())
         for task in scope.get_tasks(state=TaskState.ERROR)
-    ]
-    return errored[0] if len(errored) == 1 else None
+    }
+    return next(iter(errored.values())) if len(errored) == 1 else None
 
 
 def _nearest_error_catcher(failed: Any, code: str) -> Any:
@@ -1478,11 +1515,9 @@ def _transition_process_instance_to_error_for_failed_workflow_task(
     failed_task_guid: str | None = None,
     recovery_only: bool = False,
 ) -> None:
-    if failed_task_guid is None:
-        errored_service_tasks = _errored_service_tasks(workflow)
-        failed_task_guid = (
-            str(errored_service_tasks[0].id) if errored_service_tasks else None
-        )
+    errored_service_tasks = _errored_service_tasks(workflow)
+    if failed_task_guid is None and errored_service_tasks:
+        failed_task_guid = str(errored_service_tasks[0].id)
 
     if recovery_only:
         _persist_workflow_recovery_state(
@@ -1534,12 +1569,19 @@ def _transition_process_instance_to_error_for_failed_workflow_task(
     session.flush()
 
 
-def _errored_service_tasks(workflow: BpmnWorkflow) -> list[object]:
+def _errored_service_tasks(workflow: BpmnWorkflow) -> list[Task]:
     return [
         task
         for task in runtime_tasks(workflow, state=TaskState.ERROR)
         if type(getattr(task, "task_spec", object())).__name__ == "ServiceTask"
     ]
+
+
+def _require_source_bpmn_xml(process_definition: BpmnProcessDefinitionModel) -> str:
+    source_bpmn_xml = process_definition.source_bpmn_xml
+    if source_bpmn_xml is None:
+        raise ValidationError("Process definition does not include stored BPMN XML")
+    return source_bpmn_xml
 
 
 def _load_process_definition(
@@ -1667,6 +1709,7 @@ def _persist_workflow_state(
     from m8flow_core.services.signal_registry import sync_instance_signals
 
     sync_instance_signals(session, process_instance, workflow, occurred_at)
+    sync_instance_messages(session, process_instance, workflow)
     if process_instance.collaboration_correlation_key is not None:
         _enqueue_collaboration_messages(
             session, process_instance, workflow, occurred_at
@@ -2212,8 +2255,8 @@ def _current_ready_manual_tasks(
     *,
     process_instance: ProcessInstanceModel,
     workflow: BpmnWorkflow,
-) -> list[object]:
-    ready_tasks: list[object] = []
+) -> list[Task]:
+    ready_tasks: list[Task] = []
     for task in runtime_tasks(workflow, state=TaskState.READY, manual=True):
         task_model = session.get(TaskModel, str(task.id))
         if task_model is None:
@@ -2264,7 +2307,7 @@ def _close_inactive_work_item(
 
 
 def _inactive_work_item_status(task_state_name: str | None) -> str:
-    if task_state_name in {
+    if task_state_name is not None and task_state_name in {
         TaskState.get_name(TaskState.CANCELLED),
         TaskState.get_name(TaskState.COMPLETED),
         TaskState.get_name(TaskState.ERROR),
@@ -2289,7 +2332,7 @@ def _materialize_single_manual_task(
     *,
     process_instance: ProcessInstanceModel,
     workflow: BpmnWorkflow,
-    task: object,
+    task: Task,
     occurred_at: datetime,
 ) -> WorkItemModel:
     task_id = str(task.id)
@@ -2382,7 +2425,7 @@ def _upsert_task_model(
     *,
     process_instance: ProcessInstanceModel,
     task_definition: TaskDefinitionModel,
-    task: object,
+    task: Task,
     occurred_at: datetime,
 ) -> TaskModel:
     serialized_task = _WORKFLOW_SERIALIZER.to_dict(task)
@@ -2483,7 +2526,7 @@ def _upsert_work_item(
     *,
     process_instance: ProcessInstanceModel,
     task_model: TaskModel,
-    task: object,
+    task: Task,
     task_definition: TaskDefinitionModel,
     occurred_at: datetime,
 ) -> WorkItemModel:
@@ -2687,7 +2730,7 @@ def _collect_timer_start_payloads_for_definition(
         )
         if process_definition.source_dmn_xml is not None:
             parser.add_dmn_str(_coerce_xml_bytes(process_definition.source_dmn_xml))
-        payloads = []
+        payloads: list[dict[str, Any]] = []
         for process_id in collaboration["executable_process_ids"]:
             spec = parser.get_spec(process_id)
             if not any(
@@ -2811,7 +2854,7 @@ def _force_waiting_timer_start_task_due(
             continue
 
         internal_data = getattr(task, "internal_data", None)
-        if not isinstance(internal_data, Mapping):
+        if not isinstance(internal_data, MutableMapping):
             raise ValidationError("Waiting timer start task is missing internal data")
         internal_data["event_value"] = _forced_due_timer_event_value(
             internal_data.get("event_value")
@@ -2847,7 +2890,7 @@ def _forced_due_timer_event_value(event_value: object) -> str | dict[str, Any]:
     raise ValidationError("Waiting timer task is missing its event_value")
 
 
-def _waiting_timer_event_value(task: object) -> str | dict[str, Any]:
+def _waiting_timer_event_value(task: Task) -> str | dict[str, Any]:
     internal_data = getattr(task, "internal_data", None)
     if not isinstance(internal_data, Mapping):
         raise ValidationError("Waiting timer task is missing internal timer data")
@@ -2922,7 +2965,7 @@ def _apply_metadata_to_workflow(
 
 def _apply_metadata_to_task(
     workflow: BpmnWorkflow,
-    task: object,
+    task: Task,
     metadata: Mapping[str, Any],
 ) -> None:
     if not metadata:
@@ -2984,10 +3027,10 @@ def _load_process_instance(
             "Process instance "
             f"{process_instance_id} was not found for tenant {tenant_id}"
         )
-    from m8flow_core.services.signal_registry import lock_signal_instance
+    from m8flow_core.services.signal_registry import lock_event_instance
 
     lock_collaboration_instance(session, process_instance)
-    lock_signal_instance(session, process_instance)
+    lock_event_instance(session, process_instance)
     if process_instance.workflow_state_json is not None:
         payload = json.loads(process_instance.workflow_state_json)
         if "m8f_compensation" not in payload and process_instance.bpmn_version_id:
@@ -3012,5 +3055,5 @@ def _resolve_timestamp(timestamp: datetime | None) -> datetime:
     return timestamp or datetime.now(UTC)
 
 
-def _raise_value_error(message: str) -> None:
+def _raise_value_error(message: str) -> NoReturn:
     raise ValidationError(message)

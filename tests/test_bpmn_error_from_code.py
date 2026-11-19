@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """BPMN errors raised from script and service-task code (M8F-675).
 
 A script raises ``BpmnError("CODE")`` and a connector raises
@@ -129,7 +134,12 @@ class _FailingConnector:
         )
 
 
-def _start(session: Session, bpmn_xml: str) -> ProcessInstanceModel:
+def _start(
+    session: Session,
+    bpmn_xml: str,
+    *,
+    call_activity_resolver: api.CallActivityResolver | None = None,
+) -> ProcessInstanceModel:
     tenant = M8flowTenantModel(id="tenant-m8f675", name="M8F-675", slug="tenant-m8f675")
     user = UserModel(
         username="m8f675-admin",
@@ -167,6 +177,7 @@ def _start(session: Session, bpmn_xml: str) -> ProcessInstanceModel:
             bpmn_process_definition_id=definition.id,
             process_initiator_id=user.id,
             started_at=datetime.fromtimestamp(20, UTC),
+            call_activity_resolver=call_activity_resolver,
         ),
     )
 
@@ -369,3 +380,74 @@ def test_script_bpmn_error_starts_a_matching_error_event_subprocess(
     session: Session,
 ) -> None:
     _assert_caught(_start(session, _ERROR_EVENT_SUBPROCESS))
+
+
+_LOOKUP_SERVICE_TASK = (
+    '<bpmn:serviceTask id="{id}"><bpmn:extensionElements>'
+    '<spiffworkflow:serviceTaskOperator id="demo/Lookup" resultVariable="lookup">'
+    "<spiffworkflow:parameters /></spiffworkflow:serviceTaskOperator>"
+    "</bpmn:extensionElements>"
+    "<bpmn:incoming>{incoming}</bpmn:incoming><bpmn:outgoing>{outgoing}</bpmn:outgoing>"
+    "</bpmn:serviceTask>"
+)
+
+
+def test_connector_error_in_a_subprocess_is_caught_by_its_boundary(
+    session: Session,
+) -> None:
+    """A connector error escapes Spiff without its task. The failed task must
+    still be found when it runs inside a sub-process."""
+    subprocess = (
+        '<bpmn:subProcess id="Work"><bpmn:incoming>Flow_1</bpmn:incoming>'
+        "<bpmn:outgoing>Flow_2</bpmn:outgoing>"
+        '<bpmn:startEvent id="SubStart"><bpmn:outgoing>Flow_S1</bpmn:outgoing>'
+        "</bpmn:startEvent>"
+        + _LOOKUP_SERVICE_TASK.format(
+            id="SubLookup", incoming="Flow_S1", outgoing="Flow_S2"
+        )
+        + '<bpmn:endEvent id="SubEnd">'
+        "<bpmn:incoming>Flow_S2</bpmn:incoming></bpmn:endEvent>"
+        '<bpmn:sequenceFlow id="Flow_S1" sourceRef="SubStart" targetRef="SubLookup" />'
+        '<bpmn:sequenceFlow id="Flow_S2" sourceRef="SubLookup" targetRef="SubEnd" />'
+        "</bpmn:subProcess>"
+    )
+    registry = api.ServiceTaskRegistry(connectors=(_FailingConnector("HttpError404"),))
+    with api.service_task_registry_scope(registry):
+        _assert_caught(_start(session, _bpmn(subprocess, "HttpError404")))
+
+
+_CALLED_CHILD = f"""<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions {_NS} id="Child" targetNamespace="urn:m8flow:m8f675">
+  <bpmn:process id="child_process" isExecutable="true">
+    <bpmn:startEvent id="ChildStart"><bpmn:outgoing>Flow_C1</bpmn:outgoing>
+    </bpmn:startEvent>
+    {_LOOKUP_SERVICE_TASK.format(id="Lookup", incoming="Flow_C1", outgoing="Flow_C2")}
+    <bpmn:endEvent id="ChildEnd"><bpmn:incoming>Flow_C2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_C1" sourceRef="ChildStart" targetRef="Lookup" />
+    <bpmn:sequenceFlow id="Flow_C2" sourceRef="Lookup" targetRef="ChildEnd" />
+  </bpmn:process>
+</bpmn:definitions>
+"""
+
+
+def test_connector_error_in_a_called_process_is_caught_by_the_call_activity_boundary(
+    session: Session,
+) -> None:
+    """An error that leaves a called process reaches the call activity's error
+    boundary in the parent, as for an embedded sub-process."""
+    call = (
+        '<bpmn:callActivity id="Work" calledElement="child_process">'
+        "<bpmn:incoming>Flow_1</bpmn:incoming><bpmn:outgoing>Flow_2</bpmn:outgoing>"
+        "</bpmn:callActivity>"
+    )
+    registry = api.ServiceTaskRegistry(connectors=(_FailingConnector("HttpError404"),))
+    with api.service_task_registry_scope(registry):
+        _assert_caught(
+            _start(
+                session,
+                _bpmn(call, "HttpError404"),
+                call_activity_resolver=lambda _context: api.CallActivityDefinition(
+                    "child_process", _CALLED_CHILD
+                ),
+            )
+        )

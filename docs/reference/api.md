@@ -1,8 +1,15 @@
+<!--
+SPDX-FileCopyrightText: 2026 AOT Technologies
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Public API reference
 
 This page is the contract for the public surface of m8flow-core. Every name on
 it is exported from `m8flow_core.api`. Anything not on this page is internal
-and can change in any release. To use the API, import the module:
+and can change in any release. Changes to this contract follow the
+[versioning policy](versioning.md). To use the API, import the module:
 
 ```python
 from m8flow_core import api
@@ -53,11 +60,42 @@ They behave as follows:
 | Return value | The ORM model or list that the matching service function returns |
 | Wrong payload kind | `execute_command` raises `TypeError` for a query or an unknown object; `execute_query` raises `TypeError` for a command or an unknown object |
 
-Each command and query also has a service function you can call directly,
+Most commands and queries also have a service function you can call directly,
 with the same arguments, such as `api.claim_task(...)` or
 `api.list_process_instances(...)`.
 
 ## Commands
+
+### CorrelateMessageCommand
+
+External message correlation serves catches in single-process definitions.
+
+| Field | Type | Required |
+|---|---|---|
+| `tenant_id` | `str` | Yes |
+| `message_name` | `str` | Yes |
+| `user_id` | `int` | Yes |
+| `delivery_id` | `str` | Yes |
+| `payload` | `dict[str, Any]` | Yes |
+| `process_definition_id` | `int \| None` | No |
+| `process_instance_id` | `int \| None` | No |
+
+The command uses a frozen, slotted dataclass with fields in the order shown.
+It requires tenant membership and `MESSAGE_CORRELATE_COMMAND`
+(`message.correlate`) with `execute` on the exact tenant resource. Core
+manager and admin roles grant it.
+
+Dispatch with `execute_command` to receive a `MessageDeliveryReceiptModel`.
+Committed receipts expose `delivery_id`, `process_instance_id`, `task_guid`,
+`delivered_at` in UTC, and `outcome` (`delivered` or `workflow_error`).
+Errors include `ValidationError` for malformed inputs, `NotFoundError` for
+zero matches, `AmbiguousMessageCorrelationError` for multiple matches, and
+`MessageDeliveryConflictError` for reusing a committed ID with changed inputs.
+The two conflict errors inherit from `InvalidStateError`.
+
+`validate_message_bpmn(source_bpmn_xml)` accepts `str` or `bytes` and raises
+`ValidationError` for unsupported or invalid message constructs. See
+[Correlate external BPMN messages](../how-to/correlate-messages.md).
 
 ### Signal publication and delivery
 
@@ -266,6 +304,7 @@ def resolve_child(context: api.CallActivityContext):
         bpmn_xml=row.bpmn_xml,
         dmn_xml=row.dmn_xml,
     )
+
 
 command = api.InitializeProcessInstanceFromDefinitionCommand(
     tenant_id=tenant_id,
@@ -617,7 +656,7 @@ The following names make up the service task extension point:
 | `split_service_task_operation_id(operation_id)` | Function | Validates an operation ID and returns `(connector_key, command_name)` |
 | `fetch_connector_proxy_command_definitions(...)` | Function | Reads the proxy's `/v1/commands` catalog as command definitions |
 | `build_connector_proxy_service_task_connectors(...)` | Function | Groups the proxy catalog into one connector per connector key |
-| `build_connector_proxy_service_task_registry(base_url, *, timeout_seconds=...)` | Function | Builds a registry from a proxy base URL |
+| `build_connector_proxy_service_task_registry(base_url, *, timeout_seconds=...)` | Function | Builds a registry from a proxy base URL. Raises `ValidationError` unless `base_url` is an absolute `http` or `https` URL |
 | `service_task_registry_scope(registry_or_factory)` | Context manager | Installs a registry for a block of calls |
 | `set_default_service_task_registry_factory(factory)` | Function | Installs a registry factory for the whole process |
 

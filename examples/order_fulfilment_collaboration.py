@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Deploy two BPMN pools and deliver modeled messages with the scheduler."""
 
 from datetime import UTC, datetime
@@ -89,9 +94,7 @@ def main() -> None:
             assert len(instances) == 2 and all(
                 item.status == "complete" for item in instances
             )
-            print(
-                "Order 100 started Fulfilment through a Message Start Event."
-            )
+            print("Order 100 started Fulfilment through a Message Start Event.")
 
         with session.begin():
             fulfilment = start("Fulfilment", "order-101")
@@ -106,9 +109,7 @@ def main() -> None:
                 == 1
             )
             assert fulfilment.status == "complete"
-            print(
-                "Order 101 resumed Fulfilment through a Message Catch Event."
-            )
+            print("Order 101 resumed Fulfilment through a Message Catch Event.")
 
     engine.dispose()
 

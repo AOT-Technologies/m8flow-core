@@ -1,3 +1,8 @@
+#
+# SPDX-FileCopyrightText: 2026 AOT Technologies
+# SPDX-License-Identifier: Apache-2.0
+#
+
 """Multi-instance user tasks through claim and complete (M8F-640).
 
 A loop iteration's form submission belongs to that iteration: it leaves only
