@@ -31,6 +31,7 @@ from m8flow_core.models.signals import (
 )
 from m8flow_core.services.signal_runtime import (
     RuntimeSignalDefinition,
+    _runtime_signal_definitions,
     deliver_to_subscription,
     event_starts,
     interrupting_starts,
@@ -277,36 +278,38 @@ def sync_instance_signals(
             event = getattr(task.task_spec, "event_definition", None)
             if task.workflow is not scope or task.state != TaskState.WAITING:
                 continue
-            if not isinstance(event, RuntimeSignalDefinition):
-                continue
             # Top-level signal starts instantiate via definition subscriptions.
             if scope is workflow and task.task_spec in workflow.spec.bpmn_start_events:
+                continue
+            signal_events = _runtime_signal_definitions(event)
+            if not signal_events:
                 continue
             boundary = isinstance(task.task_spec, BoundaryEvent)
             repeatable = boundary and not task.task_spec.cancel_activity
             activation = task.internal_data.setdefault(
                 "m8f_signal_activation", str(uuid4())
             )
-            identity = (
+            task_identity = (
                 f"boundary:{task.parent.id}:{task.task_spec.name}"
                 if repeatable
                 else f"task:{task.id}:{activation}"
             )
-            _upsert_subscription(
-                session,
-                instance.m8f_tenant_id,
-                f"pi:{instance.id}:{identity}",
-                timestamp,
-                signal_name=event.name,
-                kind="boundary" if boundary else "catch",
-                process_instance_id=instance.id,
-                definition_id=instance.bpmn_process_definition_id,
-                scope_id=scope_key(scope),
-                task_guid=str(task.id),
-                task_spec_name=task.task_spec.name,
-                process_model_identifier=instance.process_model_identifier,
-                repeatable=repeatable,
-            )
+            for signal_event in signal_events:
+                _upsert_subscription(
+                    session,
+                    instance.m8f_tenant_id,
+                    f"pi:{instance.id}:{task_identity}:signal:{signal_event.name}",
+                    timestamp,
+                    signal_name=signal_event.name,
+                    kind="boundary" if boundary else "catch",
+                    process_instance_id=instance.id,
+                    definition_id=instance.bpmn_process_definition_id,
+                    scope_id=scope_key(scope),
+                    task_guid=str(task.id),
+                    task_spec_name=task.task_spec.name,
+                    process_model_identifier=instance.process_model_identifier,
+                    repeatable=repeatable,
+                )
         for name, start in event_starts(workflow, scope):
             _upsert_subscription(
                 session,

@@ -18,6 +18,8 @@ and what each version part means.
 
 ### Fixed
 
+- Signal subscriptions now include signal definitions nested in event-based
+  gateways, allowing local and queued publications to reach their catch events.
 - Recurring timer start schedules now enqueue uniquely keyed occurrences and
   advance from the original `timeCycle` cadence independently of process
   execution. Process creation and occurrence completion share the caller's

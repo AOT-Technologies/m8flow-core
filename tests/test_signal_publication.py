@@ -626,6 +626,112 @@ def test_local_catchers_and_remote_delivery_share_one_publication(session, actor
     assert remote.status == "complete"
 
 
+def test_event_based_gateway_signal_catches_are_tenant_scoped_and_idempotent(
+    session, actor
+):
+    from SpiffWorkflow.util.task import TaskState
+
+    body = (
+        '<startEvent id="start"/>'
+        + flow("start", "fork")
+        + '<parallelGateway id="fork"/>'
+        + flow("fork", "gate")
+        + '<userTask id="gate"/>'
+        + flow("gate", "throw")
+        + '<intermediateThrowEvent id="throw">'
+        '<signalEventDefinition signalRef="sig"/></intermediateThrowEvent>'
+        + flow("throw", "throw_end")
+        + '<endEvent id="throw_end"/>'
+        + flow("fork", "gateway")
+        + '<eventBasedGateway id="gateway" eventGatewayType="Exclusive"/>'
+    )
+    for name, signal in (("caught_notice", "sig"), ("caught_other", "sig2")):
+        catch, after, end = f"catch_{name}", f"after_{name}", f"end_{name}"
+        body += (
+            flow("gateway", catch) + f'<intermediateCatchEvent id="{catch}">'
+            f'<signalEventDefinition signalRef="{signal}"/>'
+            "</intermediateCatchEvent>"
+            + flow(catch, after)
+            + script(after, f"{name} = True")
+            + flow(after, end)
+            + f'<endEvent id="{end}"/>'
+        )
+    xml = model(body, "event_gateway").replace(
+        '<process id="event_gateway"',
+        '<signal id="sig2" name="Other"/><process id="event_gateway"',
+    )
+    other_tenant = seed_actor(session, "other")
+    definition = deploy(session, actor, xml, "event_gateway")
+    foreign_definition = deploy(session, other_tenant, xml, "event_gateway")
+    local = start(session, actor, definition)
+    remote = start(session, actor, definition)
+    foreign = start(session, other_tenant, foreign_definition)
+
+    subscriptions = list(
+        session.scalars(
+            select(SignalSubscriptionModel).where(
+                SignalSubscriptionModel.kind == "catch",
+            )
+        )
+    )
+    assert {row.process_instance_id for row in subscriptions} == {
+        local.id,
+        remote.id,
+        foreign.id,
+    }
+    assert len(subscriptions) == 6
+    assert {
+        row.process_instance_id: {
+            subscription.signal_name
+            for subscription in subscriptions
+            if subscription.process_instance_id == row.process_instance_id
+        }
+        for row in subscriptions
+    } == {
+        local.id: {"Notice", "Other"},
+        remote.id: {"Notice", "Other"},
+        foreign.id: {"Notice", "Other"},
+    }
+
+    local_gate = next(
+        item
+        for item in api.get_pending_tasks(session, tenant_id=actor[0], user_id=actor[1])
+        if item.process_instance_id == local.id
+    )
+    api.execute_command(
+        session, api.ClaimTaskCommand(actor[0], local_gate.id, actor[1])
+    )
+    api.execute_command(
+        session, api.CompleteTaskCommand(actor[0], local_gate.id, actor[1])
+    )
+    assert local.status == "complete"
+    assert remote.status == foreign.status == "user_input_required"
+
+    publications = list(session.scalars(select(SignalPublicationModel)))
+    assert len(publications) == 1
+    receipts = api.list_signal_deliveries(
+        session, tenant_id=actor[0], occurrence_id=publications[0].occurrence_id
+    )
+    assert len(receipts) == 2
+    assert [receipt.status for receipt in receipts].count("delivered") == 1
+    assert [receipt.status for receipt in receipts].count("pending") == 1
+    assert len(run(session, actor[0])) == 1
+    session.expire_all()
+    assert remote.status == foreign.status == "user_input_required"
+    remote_workflow = _restore_workflow(remote.workflow_state_json)
+    assert (
+        remote_workflow.get_tasks(spec_name="catch_caught_notice")[0].state
+        == TaskState.COMPLETED
+    )
+    assert (
+        remote_workflow.get_tasks(spec_name="after_caught_notice")[0].state
+        == TaskState.COMPLETED
+    )
+    foreign_workflow = _restore_workflow(foreign.workflow_state_json)
+    assert foreign_workflow.get_tasks(spec_name="gateway")[0].state == TaskState.WAITING
+    assert run(session, actor[0]) == []
+
+
 def test_recipient_script_failure_consumed_once_and_does_not_block_others(
     session, actor
 ):
