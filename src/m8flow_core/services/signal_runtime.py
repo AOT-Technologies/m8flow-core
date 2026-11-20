@@ -214,11 +214,24 @@ def deliver_to_subscription(
     task = workflow.get_task_from_id(UUID(subscription.task_guid))
     if task is None or task.state != TaskState.WAITING:
         return False
-    if not subscription.repeatable and not subscription.subscription_key.endswith(
-        task.internal_data.get("m8f_signal_activation", "missing")
+    activation = task.internal_data.get("m8f_signal_activation", "missing")
+    if not subscription.repeatable and (
+        f"task:{task.id}:{activation}:signal:" not in subscription.subscription_key
     ):
         return False
-    event = BpmnEvent(task.task_spec.event_definition, payload=payload)
+    signal_definition = next(
+        (
+            event_definition
+            for event_definition in _runtime_signal_definitions(
+                task.task_spec.event_definition
+            )
+            if event_definition.name == subscription.signal_name
+        ),
+        None,
+    )
+    if signal_definition is None:
+        return False
+    event = BpmnEvent(signal_definition, payload=payload)
     task.task_spec.catch(task, event)
     task.task_spec._update(task)
     if isinstance(task.task_spec, BoundaryEvent) and not task.task_spec.cancel_activity:
@@ -227,3 +240,12 @@ def deliver_to_subscription(
         listener.task_spec._predict(listener, mask=TaskState.NOT_FINISHED_MASK)
         listener.task_spec._update(listener)
     return True
+
+
+def _runtime_signal_definitions(event_definition: Any) -> list[RuntimeSignalDefinition]:
+    if isinstance(event_definition, RuntimeSignalDefinition):
+        return [event_definition]
+    result: list[RuntimeSignalDefinition] = []
+    for child in getattr(event_definition, "event_definitions", []):
+        result.extend(_runtime_signal_definitions(child))
+    return result
