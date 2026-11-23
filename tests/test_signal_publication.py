@@ -866,6 +866,49 @@ def test_long_signal_name_repeatable_boundary_receives_each_occurrence(session, 
     assert instance.status == "user_input_required"
 
 
+def test_legacy_subscription_key_without_signal_segment_still_delivers(session, actor):
+    from SpiffWorkflow.util.task import TaskState
+
+    instance = start(session, actor, deploy(session, actor, waiter()))
+    instance_id = instance.id
+    subscription = session.scalar(
+        select(SignalSubscriptionModel).where(
+            SignalSubscriptionModel.m8f_tenant_id == actor[0],
+            SignalSubscriptionModel.process_instance_id == instance_id,
+            SignalSubscriptionModel.kind == "catch",
+        )
+    )
+    assert subscription is not None
+    workflow = _restore_workflow(instance.workflow_state_json)
+    catch = workflow.get_tasks(spec_name="catch", state=TaskState.WAITING)[0]
+    activation = catch.internal_data["m8f_signal_activation"]
+
+    # This was the key format persisted by core 1.0.0 before signal names were
+    # added to per-instance catcher subscription keys.
+    subscription.subscription_key = f"pi:{instance_id}:task:{catch.id}:{activation}"
+    session.commit()
+    session.expire_all()
+
+    # Reload both records after committing to model publication after an
+    # upgrade, before the instance has been persisted again by the new core.
+    instance = session.get(ProcessInstanceModel, instance_id)
+    subscription = session.scalar(
+        select(SignalSubscriptionModel).where(
+            SignalSubscriptionModel.m8f_tenant_id == actor[0],
+            SignalSubscriptionModel.process_instance_id == instance_id,
+            SignalSubscriptionModel.kind == "catch",
+        )
+    )
+    assert instance is not None
+    assert subscription is not None
+    assert ":signal:" not in subscription.subscription_key
+
+    publish(session, actor)
+    receipts = run(session, actor[0])
+    assert [receipt.status for receipt in receipts] == ["delivered"]
+    assert instance.status == "complete"
+
+
 def test_recipient_script_failure_consumed_once_and_does_not_block_others(
     session, actor
 ):
