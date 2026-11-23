@@ -216,7 +216,8 @@ def deliver_to_subscription(
         return False
     activation = task.internal_data.get("m8f_signal_activation", "missing")
     if not subscription.repeatable and (
-        f"task:{task.id}:{activation}:signal:" not in subscription.subscription_key
+        activation == "missing"
+        or not subscription.subscription_key.endswith(activation)
     ):
         return False
     signal_definition = next(

@@ -298,7 +298,7 @@ def sync_instance_signals(
                 _upsert_subscription(
                     session,
                     instance.m8f_tenant_id,
-                    f"pi:{instance.id}:{task_identity}:signal:{signal_event.name}",
+                    f"pi:{instance.id}:signal:{signal_event.name}:{task_identity}",
                     timestamp,
                     signal_name=signal_event.name,
                     kind="boundary" if boundary else "catch",

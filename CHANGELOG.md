@@ -20,6 +20,8 @@ and what each version part means.
 
 - Signal subscriptions now include signal definitions nested in event-based
   gateways, allowing local and queued publications to reach their catch events.
+  Long signal names keep hashed subscription keys within the database column
+  limit while preserving the catcher activation identity.
 - Recurring timer start schedules now enqueue uniquely keyed occurrences and
   advance from the original `timeCycle` cadence independently of process
   execution. Process creation and occurrence completion share the caller's
