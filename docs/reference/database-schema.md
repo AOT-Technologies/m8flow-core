@@ -10,12 +10,12 @@ This page lists the tables that m8flow-core's ORM models define. The library
 ships the models in `m8flow_core.models` and, in `alembic/versions/`, an immutable
 Alembic baseline plus additive revisions. The baseline, `k2l3m4n5o6p7`, has
 no parent and builds the 1.0 schema on an empty database. The signal revision
-`l3m4n5o6p7q8` and compensation revision `m8f_671_compensation` form one
+`l3m4n5o6p7q8` and compensation revision `compensation_journal` form one
 branch. The merge revision `m8f_merge_runtime` joins it with the collaboration
 revision `m8f_collaboration_01`. The following revisions,
 `m8f_instance_definition_tenant` and `m8f_instance_process_tenant`, enforce
 tenant ownership of an instance's definition and BPMN process. The current
-head, `m8f_694_message_correlation`, adds external message correlation. See
+head, `message_correlation`, adds external message correlation. See
 [Upgrade to 1.0](../how-to/upgrade-to-1.0.md) for existing databases.
 
 Table and column names are part of the compatibility contract, because host
@@ -143,7 +143,7 @@ them with the referencing row's tenant and the hash together.
 
 ## Compensation journal
 
-Revision `m8f_671_compensation` adds three tenant-owned tables. Each has `id`,
+Revision `compensation_journal` adds three tenant-owned tables. Each has `id`,
 `m8f_tenant_id`, `process_instance_id`, `created_at`, and `updated_at`.
 
 | Table | Model | Additional columns |

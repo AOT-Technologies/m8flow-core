@@ -125,7 +125,7 @@ restored journal and verifies that all three handlers have one attempt. Add
 `--non-interactive` to run it without prompts.
 
 Apply Alembic head before using an existing database. The additive revision
-`m8f_671_compensation` follows signal revision `l3m4n5o6p7q8`. Existing
+`compensation_journal` follows signal revision `l3m4n5o6p7q8`. Existing
 workflows without compensation continue to restore normally. Legacy compensation
 instances lack a reliable completion journal. Import the definition and start
 a new instance to run compensation.

@@ -12,11 +12,13 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from alembic import command
+from alembic import command, op
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from alembic.script import ScriptDirectory
+from alembic.util import CommandError
 from sqlalchemy.orm import Session
 
 from m8flow_core.db import build_engine
@@ -39,11 +41,11 @@ from m8flow_core.settings import get_settings
 BASELINE_REVISION = "k2l3m4n5o6p7"
 COLLABORATION_REVISION = "m8f_collaboration_01"
 SIGNAL_REVISION = "l3m4n5o6p7q8"
-COMPENSATION_REVISION = "m8f_671_compensation"
+COMPENSATION_REVISION = "compensation_journal"
 MERGE_REVISION = "m8f_merge_runtime"
 DEFINITION_TENANT_REVISION = "m8f_instance_definition_tenant"
 PROCESS_TENANT_REVISION = "m8f_instance_process_tenant"
-HEAD_REVISION = "m8f_694_message_correlation"
+HEAD_REVISION = "message_correlation"
 
 POSTGRES_URL = os.getenv("M8FLOW_POSTGRES_UPGRADE_DATABASE_URL", "")
 
@@ -517,5 +519,426 @@ def test_instance_constraints_reject_cross_tenant_references(
                 insert.values({instance.c.m8f_tenant_id: "two", reference: target_id})
             )
     finally:
+        engine.dispose()
+        command.downgrade(config, "base")
+
+
+# Synthetic examples exercise the historical format without production ticket IDs.
+_HISTORICAL_NAMESPACE = "m8f_1"
+_LEGACY_COMPENSATION_REVISION = f"{_HISTORICAL_NAMESPACE}_compensation"
+_LEGACY_MESSAGE_REVISION = f"{_HISTORICAL_NAMESPACE}_message_correlation"
+
+_LEGACY_REVISIONS = [
+    pytest.param(
+        COMPENSATION_REVISION, _LEGACY_COMPENSATION_REVISION, False, id="compensation"
+    ),
+    pytest.param(
+        COMPENSATION_REVISION, _LEGACY_COMPENSATION_REVISION, True, id="parallel-heads"
+    ),
+    pytest.param(HEAD_REVISION, _LEGACY_MESSAGE_REVISION, False, id="message-head"),
+]
+
+
+def _revision_stamps(database_url: str) -> set[str]:
+    engine = sa.create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            return set(
+                connection.scalars(sa.text("SELECT version_num FROM alembic_version"))
+            )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+@pytest.mark.parametrize("revision,legacy,parallel", _LEGACY_REVISIONS)
+def test_legacy_stamps_preserve_journals_and_messages(
+    migration_database: str,
+    revision: str,
+    legacy: str,
+    parallel: bool,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, revision)
+    if parallel:
+        command.upgrade(config, COLLABORATION_REVISION)
+    engine = build_engine(migration_database)
+    now = datetime.now(UTC)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                M8flowTenantModel.__table__.insert().values(
+                    id="legacy",
+                    name="Legacy",
+                    slug="legacy",
+                )
+            )
+            user = UserModel.__table__
+            user_id = connection.scalar(
+                user.insert()
+                .values(
+                    username="legacy",
+                    service="test",
+                    service_id="legacy",
+                )
+                .returning(user.c.id)
+            )
+            definition = BpmnProcessDefinitionModel.__table__
+            definition_id = connection.scalar(
+                definition.insert()
+                .values(
+                    m8f_tenant_id="legacy",
+                    bpmn_identifier="saga",
+                    process_xml_digest="digest",
+                    properties_json={},
+                )
+                .returning(definition.c.id)
+            )
+            instance = ProcessInstanceModel.__table__
+            instance_id = connection.scalar(
+                instance.insert()
+                .values(
+                    m8f_tenant_id="legacy",
+                    process_model_identifier="saga",
+                    process_model_display_name="Saga",
+                    process_initiator_id=user_id,
+                )
+                .returning(instance.c.id)
+            )
+            common = dict(
+                m8f_tenant_id="legacy",
+                process_instance_id=instance_id,
+                scope_id="scope",
+                created_at=now,
+                updated_at=now,
+            )
+            connection.execute(
+                CompensationScopeModel.__table__.insert().values(
+                    **common,
+                    activity_id="activity",
+                    completed=True,
+                    data_hash="scope",
+                )
+            )
+            connection.execute(
+                CompensationRunModel.__table__.insert().values(
+                    **common,
+                    run_id="run",
+                    throw_task_guid="throw",
+                    wait_for_completion=True,
+                    status="running",
+                )
+            )
+            connection.execute(
+                CompensationRecordModel.__table__.insert().values(
+                    **common,
+                    source_task_guid="source",
+                    activity_id="activity",
+                    completion_sequence=1,
+                    status="available",
+                    attempts=0,
+                    data_hash="record",
+                )
+            )
+            tables = ["compensation_scope", "compensation_run", "compensation_record"]
+            if revision == HEAD_REVISION:
+                connection.execute(
+                    sa.text(
+                        "INSERT INTO message_subscription "
+                        "(m8f_tenant_id, process_instance_id, task_guid, "
+                        "process_definition_id, "
+                        "message_name, property_paths, correlation_digest) "
+                        "VALUES ('legacy', :instance, 'waiting', :definition, "
+                        "'Payment', '[]', :digest)"
+                    ),
+                    {
+                        "instance": instance_id,
+                        "definition": definition_id,
+                        "digest": "a" * 64,
+                    },
+                )
+                connection.execute(
+                    sa.text(
+                        "INSERT INTO message_delivery_receipt "
+                        "(m8f_tenant_id, delivery_id, request_digest, delivered_at) "
+                        "VALUES ('legacy', 'receipt', :digest, :now)"
+                    ),
+                    {"digest": "b" * 64, "now": now},
+                )
+                tables += ["message_subscription", "message_delivery_receipt"]
+            before = {
+                name: connection.execute(sa.text(f"SELECT * FROM {name}")).all()
+                for name in tables
+            }
+            connection.execute(
+                sa.text(
+                    "UPDATE alembic_version SET version_num = :legacy "
+                    "WHERE version_num = :revision"
+                ),
+                {"legacy": legacy, "revision": revision},
+            )
+        command.upgrade(config, "head")
+        command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {HEAD_REVISION}
+        assert _schema_diff(migration_database) == []
+        with engine.connect() as connection:
+            for name, rows in before.items():
+                assert (
+                    connection.execute(sa.text(f"SELECT * FROM {name}")).all() == rows
+                )
+        command.downgrade(config, COMPENSATION_REVISION)
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            for name in (
+                "compensation_scope",
+                "compensation_run",
+                "compensation_record",
+            ):
+                assert (
+                    connection.execute(sa.text(f"SELECT * FROM {name}")).all()
+                    == before[name]
+                )
+    finally:
+        engine.dispose()
+        command.downgrade(config, "base")
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+@pytest.mark.parametrize("revision,legacy,parallel", _LEGACY_REVISIONS)
+def test_legacy_stamp_normalization_rolls_back_on_failure(
+    migration_database: str,
+    revision: str,
+    legacy: str,
+    parallel: bool,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, revision)
+    if parallel:
+        command.upgrade(config, COLLABORATION_REVISION)
+    engine = sa.create_engine(migration_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "UPDATE alembic_version SET version_num = :legacy "
+                    "WHERE version_num = :revision"
+                ),
+                {"legacy": legacy, "revision": revision},
+            )
+        before = _revision_stamps(migration_database)
+        with pytest.raises(CommandError, match="Can't locate revision"):
+            command.upgrade(config, "nonexistent_revision")
+        assert _revision_stamps(migration_database) == before
+    finally:
+        engine.dispose()
+        command.downgrade(config, "base")
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+def test_legacy_stamp_normalization_rolls_back_with_failed_schema_upgrade(
+    migration_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, COMPENSATION_REVISION)
+    engine = sa.create_engine(migration_database)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text("UPDATE alembic_version SET version_num = :legacy"),
+            {"legacy": _LEGACY_COMPENSATION_REVISION},
+        )
+    create_table = op.create_table
+
+    def fail_message_table(name: str, *args: object, **kwargs: object) -> object:
+        if name == "message_subscription":
+            raise RuntimeError("injected schema failure")
+        return create_table(name, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(op, "create_table", fail_message_table)
+            with pytest.raises(RuntimeError, match="injected schema failure"):
+                command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {_LEGACY_COMPENSATION_REVISION}
+        assert "message_subscription" not in _table_names(migration_database)
+        assert "collaboration_correlation_key" not in {
+            col["name"] for col in sa.inspect(engine).get_columns("process_instance")
+        }
+        command.upgrade(config, "head")
+    finally:
+        engine.dispose()
+        command.downgrade(config, "base")
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+@pytest.mark.parametrize(
+    "revision,legacy",
+    [
+        (COMPENSATION_REVISION, _LEGACY_COMPENSATION_REVISION),
+        (HEAD_REVISION, _LEGACY_MESSAGE_REVISION),
+    ],
+)
+def test_legacy_and_current_revision_collision_is_rejected(
+    migration_database: str,
+    revision: str,
+    legacy: str,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, revision)
+    engine = sa.create_engine(migration_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("INSERT INTO alembic_version VALUES (:legacy)"),
+                {"legacy": legacy},
+            )
+        with pytest.raises(RuntimeError, match="Both legacy and current"):
+            command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {revision, legacy}
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM alembic_version WHERE version_num = :legacy"),
+                {"legacy": legacy},
+            )
+        engine.dispose()
+        command.downgrade(config, "base")
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "m8f_invalid_message_correlation",
+        "m8f_1_unknown_schema",
+        "m8f_1_message_correlation_extra",
+        "m8f_1_compensation_journal",
+    ],
+)
+def test_unsupported_historical_names_do_not_change_stamps(
+    migration_database: str,
+    marker: str,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, "head")
+    engine = sa.create_engine(migration_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("UPDATE alembic_version SET version_num = :marker"),
+                {"marker": marker},
+            )
+        with pytest.raises(CommandError, match="Can't locate revision"):
+            command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {marker}
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("UPDATE alembic_version SET version_num = :head"),
+                {"head": HEAD_REVISION},
+            )
+        engine.dispose()
+        command.downgrade(config, "base")
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+@pytest.mark.parametrize(
+    "revision,legacy",
+    [
+        (COMPENSATION_REVISION, _LEGACY_COMPENSATION_REVISION),
+        (HEAD_REVISION, _LEGACY_MESSAGE_REVISION),
+    ],
+)
+@pytest.mark.parametrize("damage", ["table", "column", "foreign-key"])
+def test_historical_schema_is_validated_before_translation(
+    migration_database: str,
+    revision: str,
+    legacy: str,
+    damage: str,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, revision)
+    table = (
+        "compensation_scope"
+        if revision == COMPENSATION_REVISION
+        else "message_subscription"
+    )
+    engine = sa.create_engine(migration_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("UPDATE alembic_version SET version_num = :legacy"),
+                {"legacy": legacy},
+            )
+            if damage == "table":
+                connection.execute(sa.DDL(f"DROP TABLE {table}"))
+            elif damage == "column":
+                column = (
+                    "activity_id"
+                    if revision == COMPENSATION_REVISION
+                    else "property_paths"
+                )
+                connection.execute(sa.DDL(f"ALTER TABLE {table} DROP COLUMN {column}"))
+            else:
+                naming = {
+                    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"
+                }
+                key = next(
+                    key
+                    for key in sa.inspect(connection).get_foreign_keys(table)
+                    if key["referred_table"] == "m8flow_tenant"
+                )
+                key_name = key["name"] or f"fk_{table}_m8f_tenant_id_m8flow_tenant"
+                with Operations.context(
+                    MigrationContext.configure(connection)
+                ) as operations:
+                    with operations.batch_alter_table(
+                        table, naming_convention=naming
+                    ) as batch:
+                        batch.drop_constraint(
+                            key_name,
+                            type_="foreignkey",
+                        )
+        with pytest.raises(RuntimeError, match="Incompatible historical schema"):
+            command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {legacy}
+    finally:
+        # Deliberately damaged fixtures cannot use the normal downgrade chain.
+        with engine.begin() as connection:
+            metadata = sa.MetaData()
+            metadata.reflect(connection)
+            metadata.drop_all(connection)
+        engine.dispose()
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+def test_distinct_historical_names_cannot_map_to_the_same_revision(
+    migration_database: str,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, COMPENSATION_REVISION)
+    engine = sa.create_engine(migration_database)
+    other = "m8f_2_compensation"
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("UPDATE alembic_version SET version_num = :legacy"),
+                {"legacy": _LEGACY_COMPENSATION_REVISION},
+            )
+            connection.execute(
+                sa.text("INSERT INTO alembic_version VALUES (:other)"), {"other": other}
+            )
+        with pytest.raises(RuntimeError, match="Both legacy and current"):
+            command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {
+            _LEGACY_COMPENSATION_REVISION,
+            other,
+        }
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM alembic_version WHERE version_num = :other"),
+                {"other": other},
+            )
         engine.dispose()
         command.downgrade(config, "base")
