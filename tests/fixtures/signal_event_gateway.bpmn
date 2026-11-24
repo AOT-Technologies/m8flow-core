@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:spiffworkflow="http://spiffworkflow.org/bpmn/schema/1.0/core"
+  targetNamespace="urn:m8flow:signal-event-gateway">
+  <signal id="sig_notice" name="Notice" />
+  <signal id="sig_other" name="Other" />
+  <process id="signal_event_gateway" isExecutable="true">
+    <startEvent id="start" />
+    <sequenceFlow id="start_fork" sourceRef="start" targetRef="fork" />
+    <parallelGateway id="fork" />
+
+    <sequenceFlow id="fork_investigate" sourceRef="fork" targetRef="investigate" />
+    <userTask id="investigate" name="Investigate" />
+    <sequenceFlow id="investigate_throw" sourceRef="investigate" targetRef="throw_notice" />
+    <intermediateThrowEvent id="throw_notice" name="Publish Notice">
+      <signalEventDefinition signalRef="sig_notice" />
+    </intermediateThrowEvent>
+    <sequenceFlow id="throw_end" sourceRef="throw_notice" targetRef="throw_end_event" />
+    <endEvent id="throw_end_event" />
+
+    <sequenceFlow id="fork_wait" sourceRef="fork" targetRef="wait_for_signal" />
+    <eventBasedGateway id="wait_for_signal" eventGatewayType="Exclusive" />
+    <sequenceFlow id="wait_notice" sourceRef="wait_for_signal" targetRef="catch_notice" />
+    <intermediateCatchEvent id="catch_notice" name="Notice received">
+      <signalEventDefinition signalRef="sig_notice" />
+    </intermediateCatchEvent>
+    <sequenceFlow id="notice_after" sourceRef="catch_notice" targetRef="after_notice" />
+    <scriptTask id="after_notice" name="Handle Notice" scriptFormat="python">
+      <script>notice_received = True</script>
+    </scriptTask>
+    <sequenceFlow id="notice_end" sourceRef="after_notice" targetRef="notice_end_event" />
+    <endEvent id="notice_end_event" />
+
+    <sequenceFlow id="wait_other" sourceRef="wait_for_signal" targetRef="catch_other" />
+    <intermediateCatchEvent id="catch_other" name="Other received">
+      <signalEventDefinition signalRef="sig_other" />
+    </intermediateCatchEvent>
+    <sequenceFlow id="other_after" sourceRef="catch_other" targetRef="after_other" />
+    <scriptTask id="after_other" name="Handle Other" scriptFormat="python">
+      <script>other_received = True</script>
+    </scriptTask>
+    <sequenceFlow id="other_end" sourceRef="after_other" targetRef="other_end_event" />
+    <endEvent id="other_end_event" />
+  </process>
+</definitions>

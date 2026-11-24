@@ -19,6 +19,7 @@ The repository has the following examples:
 |---|---|---|
 | `compensation.py` | Interactive inventory, payment, and shipment undo in reverse order, with a restart after shipment undo commits | Temporary SQLite |
 | `signal_broadcast.py` | One signal reaches three waiting instances and one Signal Start exactly once | In-memory SQLite |
+| `signal_event_gateway.py` | A signal resumes an event-based gateway locally and in another instance, with tenant isolation and idempotent queued delivery | In-memory SQLite |
 | `parallel_review.py` | A purchase order through a parallel gateway, script tasks, and an exclusive gateway, across three lanes | In-memory SQLite |
 | `errors_demo.py` | Validation, lookup, tenant, and state errors through public calls | In-memory SQLite |
 | `order_fulfilment_collaboration.py` | Two executable pools from one BPMN file, with message starts and correlated catches | In-memory SQLite |
@@ -46,6 +47,7 @@ uv run python examples/errors_demo.py
 uv run python examples/order_fulfilment_collaboration.py
 uv run python examples/compensation.py
 uv run python examples/signal_broadcast.py
+uv run python examples/signal_event_gateway.py
 ```
 
 The compensation walkthrough pauses before each undo and before the engine
