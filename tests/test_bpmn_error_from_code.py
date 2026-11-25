@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-"""BPMN errors raised from script and service-task code (M8F-675).
+"""BPMN errors raised from script and service-task code.
 
 A script raises ``BpmnError("CODE")`` and a connector raises
 ``ServiceTaskExecutionError(..., error_code="CODE")``; the nearest matching
@@ -87,9 +87,9 @@ def _bpmn(work: str, catch_code: str | None, *, variable: str | None = None) -> 
         )
         error_ref = ' errorRef="Err_1"'
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions {_NS} id="Defs" targetNamespace="urn:m8flow:m8f675">
+<bpmn:definitions {_NS} id="Defs" targetNamespace="urn:m8flow:coded_error">
   {error}
-  <bpmn:process id="m8f675" isExecutable="true">
+  <bpmn:process id="coded_error" isExecutable="true">
     <bpmn:startEvent id="StartEvent_1">
       <bpmn:outgoing>Flow_1</bpmn:outgoing>
     </bpmn:startEvent>
@@ -140,12 +140,14 @@ def _start(
     *,
     call_activity_resolver: api.CallActivityResolver | None = None,
 ) -> ProcessInstanceModel:
-    tenant = M8flowTenantModel(id="tenant-m8f675", name="M8F-675", slug="tenant-m8f675")
+    tenant = M8flowTenantModel(
+        id="tenant-coded_error", name="Coded error", slug="tenant-coded_error"
+    )
     user = UserModel(
-        username="m8f675-admin",
-        email="m8f675-admin@example.com",
-        service="http://localhost:7002/realms/tenant-m8f675",
-        service_id="m8f675-admin-keycloak",
+        username="coded_error-admin",
+        email="coded_error-admin@example.com",
+        service="http://localhost:7002/realms/tenant-coded_error",
+        service_id="coded_error-admin-keycloak",
         display_name="Admin",
         created_at=datetime.fromtimestamp(1, UTC),
         updated_at=datetime.fromtimestamp(1, UTC),
@@ -159,9 +161,9 @@ def _start(
         session,
         api.ImportBpmnProcessDefinitionCommand(
             tenant_id=tenant.id,
-            bpmn_identifier="m8f675",
+            bpmn_identifier="coded_error",
             user_id=user.id,
-            bpmn_name="M8F-675",
+            bpmn_name="Coded error",
             source_bpmn_xml=bpmn_xml,
             created_at=datetime.fromtimestamp(10, UTC),
             updated_at=datetime.fromtimestamp(10, UTC),
@@ -261,7 +263,7 @@ def test_connector_error_code_without_catcher_stays_a_service_task_failure(
     # Core saved the Error on its own session; drop this session's stale copy.
     session.expire_all()
     instances = api.execute_query(
-        session, api.ListProcessInstancesQuery(tenant_id="tenant-m8f675")
+        session, api.ListProcessInstancesQuery(tenant_id="tenant-coded_error")
     )
     assert [pi.status for pi in instances] == [api.ProcessInstanceStatus.error]
 
@@ -290,9 +292,9 @@ def test_script_failure_at_start_saves_a_snapshot_of_the_failed_task(
 
 
 _PARALLEL_SIBLING_BOUNDARY = f"""<?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions {_NS} id="Defs" targetNamespace="urn:m8flow:m8f675">
+<bpmn:definitions {_NS} id="Defs" targetNamespace="urn:m8flow:coded_error">
   <bpmn:error id="Err_1" errorCode="E1" />
-  <bpmn:process id="m8f675_parallel" isExecutable="true">
+  <bpmn:process id="coded_error_parallel" isExecutable="true">
     <bpmn:startEvent id="StartEvent_1">
       <bpmn:outgoing>f0</bpmn:outgoing></bpmn:startEvent>
     <bpmn:parallelGateway id="Split">
@@ -341,9 +343,9 @@ def test_bpmn_error_is_not_caught_by_a_boundary_on_a_parallel_sibling(
 
 
 _ERROR_EVENT_SUBPROCESS = f"""<?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions {_NS} id="Defs" targetNamespace="urn:m8flow:m8f675">
+<bpmn:definitions {_NS} id="Defs" targetNamespace="urn:m8flow:coded_error">
   <bpmn:error id="Err_1" errorCode="E1" />
-  <bpmn:process id="m8f675_esp" isExecutable="true">
+  <bpmn:process id="coded_error_esp" isExecutable="true">
     <bpmn:startEvent id="StartEvent_1">
       <bpmn:outgoing>Flow_1</bpmn:outgoing></bpmn:startEvent>
     {_script('raise BpmnError("E1")')}
@@ -373,7 +375,7 @@ _ERROR_EVENT_SUBPROCESS = f"""<?xml version="1.0" encoding="UTF-8"?>
 
 @pytest.mark.xfail(
     strict=True,
-    reason="Error event subprocesses need M8F-665's routing (PR #52); once it "
+    reason="Error event subprocesses need scoped routing (PR #52); once it "
     "lands, code-raised errors go through _throw_to_nearest_catcher.",
 )
 def test_script_bpmn_error_starts_a_matching_error_event_subprocess(
@@ -417,7 +419,7 @@ def test_connector_error_in_a_subprocess_is_caught_by_its_boundary(
 
 
 _CALLED_CHILD = f"""<?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions {_NS} id="Child" targetNamespace="urn:m8flow:m8f675">
+<bpmn:definitions {_NS} id="Child" targetNamespace="urn:m8flow:coded_error">
   <bpmn:process id="child_process" isExecutable="true">
     <bpmn:startEvent id="ChildStart"><bpmn:outgoing>Flow_C1</bpmn:outgoing>
     </bpmn:startEvent>

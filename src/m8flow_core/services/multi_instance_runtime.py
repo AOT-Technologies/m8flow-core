@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-"""Multi-instance runtime semantics on top of SpiffWorkflow (M8F-640).
+"""Multi-instance runtime semantics on top of SpiffWorkflow.
 
 Instance-local adapters, like ``signal_runtime``: no Spiff class is patched
 globally. Each loop iteration keeps its own input item, output item and

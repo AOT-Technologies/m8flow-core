@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-"""BPMN 2.0 error and escalation catch semantics (M8F-665, gap tracker BPMN-04).
+"""BPMN 2.0 error and escalation catch semantics.
 
 Standards set: which catcher handles an event, by scope and by code. Uncaught
 behaviour is product policy and lives in test_bpmn_error_escalation_policy.py.

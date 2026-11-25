@@ -153,7 +153,7 @@ class BpmnError(Exception):
 
     Scripts call ``raise BpmnError("CODE")`` or ``raise BpmnError("CODE",
     "message")``. The nearest error boundary with that code, or with no code,
-    catches it (M8F-675). Without a matching catcher the task fails.
+    catches it. Without a matching catcher the task fails.
     """
 
     def __init__(self, code: str, message: str | None = None) -> None:

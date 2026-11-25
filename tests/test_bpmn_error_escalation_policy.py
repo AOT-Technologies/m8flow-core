@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-"""M8Flow policy for uncaught error and escalation events (M8F-665, BPMN-04).
+"""M8Flow policy for uncaught error and escalation events.
 
 BPMN 2.0.2 leaves the process behaviour unspecified when no catcher matches.
-M8Flow's policy, per M8F-665: an uncaught escalation is ignored and the flow
+M8Flow's policy: an uncaught escalation is ignored and the flow
 continues; an uncaught error end event ends its path like a plain end event.
 Neither puts the instance into an error state.
 """

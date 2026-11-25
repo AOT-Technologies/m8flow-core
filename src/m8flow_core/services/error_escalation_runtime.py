@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-"""BPMN error and escalation catch semantics for SpiffWorkflow (M8F-665).
+"""BPMN error and escalation catch semantics for SpiffWorkflow.
 
 Instance-local adapters: no Spiff classes are patched globally.
 """
@@ -52,7 +52,7 @@ class EventSubprocessStartEventParser(SignalStartParser):
 
     Spiff only parses message, signal, timer and conditional start events, so an
     error or escalation event subprocess became a none start: it ran every time
-    its scope started and caught nothing (M8F-665). As a trigger, Spiff lists the
+    its scope started and caught nothing. As a trigger, Spiff lists the
     event subprocess in the start task's ``trigger_specs`` and
     ``_throw_to_nearest_catcher`` starts it. ``isInterrupting`` is kept in the
     start event's extensions, which the workflow serializer saves.
@@ -90,7 +90,7 @@ def install_scoped_error_escalation_throw(workflow: BpmnWorkflow) -> None:
     """Route error and escalation throws through ``_throw_to_nearest_catcher``.
 
     Spiff's throw for these events has no target scope, so every matching
-    waiting catcher in the whole process caught it (M8F-665). The override is an
+    waiting catcher in the whole process caught it. The override is an
     instance attribute, so it is not serialized and is installed on every build
     and restore, together with the handlers' wiring to their scope's end.
     """
@@ -109,7 +109,7 @@ def _connect_handlers_to_scope_end(spec: Any, subprocess_specs: Any) -> None:
     wiring is set the same way on every build and restore, never when an event
     is thrown, so every instance sees the same spec. The scope's start is not
     connected to the handler: Spiff would then start the handler every time the
-    scope starts again, for example in a loop (M8F-665).
+    scope starts again, for example in a loop.
     """
     for name in getattr(spec.start, "trigger_specs", []):
         handler_spec = subprocess_specs.get(name)
@@ -133,7 +133,7 @@ def _throw_to_nearest_catcher(definition: Any, thrower: Any) -> None:
     each scope, its event subprocesses come first, then boundary events on the
     activity that hosts the scope. The first match handles the event. Nothing
     matches: the event is dropped. An uncaught escalation lets the flow go on,
-    and an uncaught error end event ends its path (M8F-665 policy).
+    and an uncaught error end event ends its path.
     """
     expression = getattr(definition, "expression", None)
     payload = (
@@ -219,7 +219,7 @@ def _interrupt(tasks: list[Any]) -> None:
 
     Cancelling a subprocess task ends its subprocess, and Spiff's completion
     callback for that subprocess moves the task back to READY, after which it
-    completes. An interrupted activity then showed as completed (M8F-665), so
+    completes. An interrupted activity then showed as completed, so
     the callbacks are disconnected first.
     """
     if not tasks:
