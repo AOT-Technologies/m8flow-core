@@ -849,13 +849,34 @@ def test_unsupported_historical_names_do_not_change_stamps(
         (HEAD_REVISION, _LEGACY_MESSAGE_REVISION),
     ],
 )
-@pytest.mark.parametrize("damage", ["table", "column", "foreign-key"])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "table",
+        "column",
+        "foreign-key",
+        "type",
+        "length",
+        "nullability",
+        "missing-check",
+        "altered-check",
+        "unique",
+        "cascade",
+    ],
+)
 def test_historical_schema_is_validated_before_translation(
     migration_database: str,
     revision: str,
     legacy: str,
     damage: str,
 ) -> None:
+    if (
+        damage in {"missing-check", "altered-check", "cascade"}
+        and revision != HEAD_REVISION
+    ):
+        pytest.skip("Message-specific constraint")
+    if damage == "unique" and revision != COMPENSATION_REVISION:
+        pytest.skip("Compensation-specific unique constraint")
     config = _alembic_config()
     command.upgrade(config, revision)
     table = (
@@ -863,9 +884,18 @@ def test_historical_schema_is_validated_before_translation(
         if revision == COMPENSATION_REVISION
         else "message_subscription"
     )
+    if damage in {"missing-check", "altered-check"}:
+        table = "message_delivery_receipt"
     engine = sa.create_engine(migration_database)
     try:
         with engine.begin() as connection:
+            connection.execute(
+                M8flowTenantModel.__table__.insert().values(
+                    id="retained",
+                    name="Retained",
+                    slug="retained",
+                )
+            )
             connection.execute(
                 sa.text("UPDATE alembic_version SET version_num = :legacy"),
                 {"legacy": legacy},
@@ -879,6 +909,55 @@ def test_historical_schema_is_validated_before_translation(
                     else "property_paths"
                 )
                 connection.execute(sa.DDL(f"ALTER TABLE {table} DROP COLUMN {column}"))
+            elif damage in {
+                "type",
+                "length",
+                "nullability",
+                "missing-check",
+                "altered-check",
+                "unique",
+            }:
+                with Operations.context(
+                    MigrationContext.configure(connection)
+                ) as operations:
+                    with operations.batch_alter_table(table) as batch:
+                        if damage in {"type", "length"}:
+                            column = (
+                                "activity_id"
+                                if revision == COMPENSATION_REVISION
+                                else "message_name"
+                            )
+                            batch.alter_column(
+                                column,
+                                type_=sa.Integer()
+                                if damage == "type"
+                                else sa.String(17),
+                                postgresql_using=(
+                                    f"{column}::integer"
+                                    if damage == "type"
+                                    else f"{column}::varchar(17)"
+                                ),
+                            )
+                        elif damage == "nullability":
+                            column = (
+                                "activity_id"
+                                if revision == COMPENSATION_REVISION
+                                else "message_name"
+                            )
+                            batch.alter_column(column, nullable=True)
+                        elif damage == "unique":
+                            batch.drop_constraint(
+                                "m8f_compensation_scope_occurrence", type_="unique"
+                            )
+                        else:
+                            batch.drop_constraint(
+                                "m8f_msg_receipt_outcome", type_="check"
+                            )
+                            if damage == "altered-check":
+                                batch.create_check_constraint(
+                                    "m8f_msg_receipt_outcome",
+                                    "outcome IS NULL OR outcome IS NOT NULL",
+                                )
             else:
                 naming = {
                     "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"
@@ -886,7 +965,8 @@ def test_historical_schema_is_validated_before_translation(
                 key = next(
                     key
                     for key in sa.inspect(connection).get_foreign_keys(table)
-                    if key["referred_table"] == "m8flow_tenant"
+                    if key["referred_table"]
+                    == ("process_instance" if damage == "cascade" else "m8flow_tenant")
                 )
                 key_name = key["name"] or f"fk_{table}_m8f_tenant_id_m8flow_tenant"
                 with Operations.context(
@@ -899,9 +979,29 @@ def test_historical_schema_is_validated_before_translation(
                             key_name,
                             type_="foreignkey",
                         )
+                        if damage == "cascade":
+                            batch.create_foreign_key(
+                                key_name,
+                                "process_instance",
+                                key["constrained_columns"],
+                                key["referred_columns"],
+                            )
         with pytest.raises(RuntimeError, match="Incompatible historical schema"):
             command.upgrade(config, "head")
         assert _revision_stamps(migration_database) == {legacy}
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(M8flowTenantModel.__table__.c.slug).where(
+                        M8flowTenantModel.__table__.c.id == "retained",
+                    )
+                )
+                == "retained"
+            )
+            assert not any(
+                name.startswith("legacy_schema_probe_")
+                for name in sa.inspect(connection).get_table_names()
+            )
     finally:
         # Deliberately damaged fixtures cannot use the normal downgrade chain.
         with engine.begin() as connection:

@@ -18,6 +18,10 @@ and what each version part means.
 
 ### Fixed
 
+- Historical migration stamps are adopted only after validating column types,
+  nullability, check and unique constraints, and foreign-key behavior. Invalid
+  schemas retain their original stamps and data.
+
 - Recurring timer start schedules now enqueue uniquely keyed occurrences and
   advance from the original `timeCycle` cadence independently of process
   execution. Process creation and occurrence completion share the caller's

@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from uuid import uuid4
 
 import sqlalchemy as sa
 from alembic import context
+from alembic.migration import MigrationContext
 from sqlalchemy import Connection, UniqueConstraint, create_engine, pool
 
 from m8flow_core.models import Base
@@ -55,6 +57,49 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _check_signatures(connection: Connection, table: sa.Table) -> set[str]:
+    """Reflect expected checks through this server's own SQL normalizer.
+
+    PostgreSQL rewrites IN expressions and adds casts/parentheses when it
+    reflects checks. A short-lived temporary table gives us the same rendering
+    without loosening expression comparisons or touching application tables.
+    """
+    checks = [
+        item for item in table.constraints if isinstance(item, sa.CheckConstraint)
+    ]
+    if not checks:
+        return set()
+    probe = sa.Table(
+        f"legacy_schema_probe_{uuid4().hex}",
+        sa.MetaData(),
+        *(sa.Column(column.name, column.type) for column in table.columns),
+        *(sa.CheckConstraint(str(item.sqltext)) for item in checks),
+        prefixes=["TEMPORARY"],
+    )
+    probe.create(connection)
+    try:
+        return {
+            item["sqltext"]
+            for item in sa.inspect(connection).get_check_constraints(probe.name)
+        }
+    finally:
+        probe.drop(connection)
+
+
+def _foreign_key_signature(key: dict[str, Any]) -> tuple[Any, ...]:
+    options = key.get("options") or {}
+    return (
+        frozenset(
+            zip(key["constrained_columns"], key["referred_columns"], strict=True)
+        ),
+        key["referred_table"],
+        (options.get("ondelete") or "NO ACTION").upper(),
+        (options.get("onupdate") or "NO ACTION").upper(),
+        bool(options.get("deferrable")),
+        (options.get("initially") or "IMMEDIATE").upper(),
+    )
+
+
 def _require_legacy_schema(connection: Connection, purpose: str) -> None:
     names = (
         ("message_subscription", "message_delivery_receipt")
@@ -62,35 +107,84 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
         else ("compensation_scope", "compensation_run", "compensation_record")
     )
     inspector = sa.inspect(connection)
+    implementation = MigrationContext.configure(connection).impl
     for name in names:
         expected = Base.metadata.tables[name]
         if not inspector.has_table(name):
             raise RuntimeError(f"Incompatible historical schema: missing table {name}")
-        columns = {column["name"] for column in inspector.get_columns(name)}
-        primary_key = set(inspector.get_pk_constraint(name)["constrained_columns"])
-        keys = {
-            (
-                tuple(key["constrained_columns"]),
-                key["referred_table"],
-                tuple(key["referred_columns"]),
-            )
+        problems = []
+        columns = {column["name"]: column for column in inspector.get_columns(name)}
+        for column in expected.columns:
+            actual = columns.get(column.name)
+            if actual is None:
+                problems.append(f"missing column {column.name}")
+                continue
+            if implementation.compare_type(
+                sa.Column(column.name, actual["type"]), column
+            ):
+                problems.append(f"incorrect type for {column.name}")
+            if actual["nullable"] != column.nullable:
+                problems.append(f"incorrect nullability for {column.name}")
+        if set(inspector.get_pk_constraint(name)["constrained_columns"]) != set(
+            expected.primary_key.columns.keys()
+        ):
+            problems.append("incorrect primary key")
+        actual_keys = {
+            _foreign_key_signature(key)
             for key in inspector.get_foreign_keys(name)
             if key.get("referred_schema") in (None, inspector.default_schema_name)
         }
         expected_keys = {
-            (
-                tuple(key.column_keys),
-                key.referred_table.name,
-                tuple(element.column.name for element in key.elements),
+            _foreign_key_signature(
+                {
+                    "constrained_columns": list(key.column_keys),
+                    "referred_columns": [
+                        element.column.name for element in key.elements
+                    ],
+                    "referred_table": key.referred_table.name,
+                    "options": {
+                        "ondelete": key.ondelete,
+                        "onupdate": key.onupdate,
+                        "deferrable": key.deferrable,
+                        "initially": key.initially,
+                    },
+                }
             )
             for key in expected.foreign_key_constraints
         }
-        if not (
-            set(expected.columns.keys()) <= columns
-            and primary_key == set(expected.primary_key.columns.keys())
-            and expected_keys <= keys
+        if not expected_keys <= actual_keys:
+            problems.append("missing or incompatible foreign key")
+        actual_unique = {
+            frozenset(key["column_names"])
+            for key in inspector.get_unique_constraints(name)
+        }
+        actual_unique.add(
+            frozenset(inspector.get_pk_constraint(name)["constrained_columns"])
+        )
+        actual_unique.update(
+            frozenset(index["column_names"])
+            for index in inspector.get_indexes(name)
+            if index["unique"]
+            and not any(
+                key.endswith("_where") and value is not None
+                for key, value in (index.get("dialect_options") or {}).items()
+            )
+        )
+        if any(
+            frozenset(key.columns.keys()) not in actual_unique
+            for key in expected.constraints
+            if isinstance(key, sa.UniqueConstraint)
         ):
-            raise RuntimeError(f"Incompatible historical schema: {name}")
+            problems.append("missing unique constraint")
+        actual_checks = {
+            item["sqltext"] for item in inspector.get_check_constraints(name)
+        }
+        if not _check_signatures(connection, expected) <= actual_checks:
+            problems.append("missing or incompatible check constraint")
+        if problems:
+            raise RuntimeError(
+                f"Incompatible historical schema: {name}: {', '.join(problems)}"
+            )
 
 
 def _reconcile_legacy_revisions(connection: Connection) -> None:
