@@ -152,13 +152,17 @@ def start(session: Session, actor: tuple[str, int], definition):
 
 
 def publish(
-    session: Session, actor: tuple[str, int], occurrence: str = "one", **kwargs
+    session: Session,
+    actor: tuple[str, int],
+    occurrence: str = "one",
+    signal_name: str = "Notice",
+    **kwargs,
 ):
     return api.execute_command(
         session,
         api.PublishSignalCommand(
             tenant_id=actor[0],
-            signal_name="Notice",
+            signal_name=signal_name,
             user_id=actor[1],
             occurrence_id=occurrence,
             published_at=NOW,
@@ -499,7 +503,12 @@ def test_invalid_inputs(session, actor):
         )
 
 
-def handler_model(kind: str, interrupt: bool, nested: bool = False) -> str:
+def handler_model(
+    kind: str,
+    interrupt: bool,
+    nested: bool = False,
+    signal: str = "Notice",
+) -> str:
     main = '<startEvent id="start"/>' + flow("start", "main")
     main += '<userTask id="main"/>' + flow("main", "end") + '<endEvent id="end"/>'
     side = (
@@ -528,7 +537,7 @@ def handler_model(kind: str, interrupt: bool, nested: bool = False) -> str:
             + flow("nested", "outer_end")
             + '<endEvent id="outer_end"/>'
         )
-    return model(main, f"{kind}_{flag}")
+    return model(main, f"{kind}_{flag}", signal)
 
 
 def pending_names(session, actor):
@@ -624,6 +633,280 @@ def test_local_catchers_and_remote_delivery_share_one_publication(session, actor
     assert [r.status for r in receipts].count("delivered") == 2
     assert len(run(session, actor[0])) == 1
     assert remote.status == "complete"
+
+
+def test_event_based_gateway_signal_catches_are_tenant_scoped_and_idempotent(
+    session, actor
+):
+    from SpiffWorkflow.util.task import TaskState
+
+    body = (
+        '<startEvent id="start"/>'
+        + flow("start", "fork")
+        + '<parallelGateway id="fork"/>'
+        + flow("fork", "gate")
+        + '<userTask id="gate"/>'
+        + flow("gate", "throw")
+        + '<intermediateThrowEvent id="throw">'
+        '<signalEventDefinition signalRef="sig"/></intermediateThrowEvent>'
+        + flow("throw", "throw_end")
+        + '<endEvent id="throw_end"/>'
+        + flow("fork", "gateway")
+        + '<eventBasedGateway id="gateway" eventGatewayType="Exclusive"/>'
+    )
+    for name, signal in (("caught_notice", "sig"), ("caught_other", "sig2")):
+        catch, after, end = f"catch_{name}", f"after_{name}", f"end_{name}"
+        body += (
+            flow("gateway", catch) + f'<intermediateCatchEvent id="{catch}">'
+            f'<signalEventDefinition signalRef="{signal}"/>'
+            "</intermediateCatchEvent>"
+            + flow(catch, after)
+            + script(after, f"{name} = True")
+            + flow(after, end)
+            + f'<endEvent id="{end}"/>'
+        )
+    xml = model(body, "event_gateway").replace(
+        '<process id="event_gateway"',
+        '<signal id="sig2" name="Other"/><process id="event_gateway"',
+    )
+    other_tenant = seed_actor(session, "other")
+    definition = deploy(session, actor, xml, "event_gateway")
+    foreign_definition = deploy(session, other_tenant, xml, "event_gateway")
+    local = start(session, actor, definition)
+    remote = start(session, actor, definition)
+    foreign = start(session, other_tenant, foreign_definition)
+
+    subscriptions = list(
+        session.scalars(
+            select(SignalSubscriptionModel).where(
+                SignalSubscriptionModel.kind == "catch",
+            )
+        )
+    )
+    assert {row.process_instance_id for row in subscriptions} == {
+        local.id,
+        remote.id,
+        foreign.id,
+    }
+    assert len(subscriptions) == 6
+    assert {
+        row.process_instance_id: {
+            subscription.signal_name
+            for subscription in subscriptions
+            if subscription.process_instance_id == row.process_instance_id
+        }
+        for row in subscriptions
+    } == {
+        local.id: {"Notice", "Other"},
+        remote.id: {"Notice", "Other"},
+        foreign.id: {"Notice", "Other"},
+    }
+
+    local_gate = next(
+        item
+        for item in api.get_pending_tasks(session, tenant_id=actor[0], user_id=actor[1])
+        if item.process_instance_id == local.id
+    )
+    api.execute_command(
+        session, api.ClaimTaskCommand(actor[0], local_gate.id, actor[1])
+    )
+    api.execute_command(
+        session, api.CompleteTaskCommand(actor[0], local_gate.id, actor[1])
+    )
+    assert local.status == "complete"
+    assert remote.status == foreign.status == "user_input_required"
+
+    publications = list(session.scalars(select(SignalPublicationModel)))
+    assert len(publications) == 1
+    receipts = api.list_signal_deliveries(
+        session, tenant_id=actor[0], occurrence_id=publications[0].occurrence_id
+    )
+    assert len(receipts) == 2
+    assert [receipt.status for receipt in receipts].count("delivered") == 1
+    assert [receipt.status for receipt in receipts].count("pending") == 1
+    assert len(run(session, actor[0])) == 1
+    session.expire_all()
+    assert remote.status == foreign.status == "user_input_required"
+    remote_workflow = _restore_workflow(remote.workflow_state_json)
+    assert (
+        remote_workflow.get_tasks(spec_name="catch_caught_notice")[0].state
+        == TaskState.COMPLETED
+    )
+    assert (
+        remote_workflow.get_tasks(spec_name="after_caught_notice")[0].state
+        == TaskState.COMPLETED
+    )
+    foreign_workflow = _restore_workflow(foreign.workflow_state_json)
+    assert foreign_workflow.get_tasks(spec_name="gateway")[0].state == TaskState.WAITING
+    assert run(session, actor[0]) == []
+
+
+def test_long_signal_name_hash_preserves_activation_and_delivers(session, actor):
+    signal_name = "Notice" + ("x" * 194)
+    body = (
+        '<startEvent id="start"/>'
+        + flow("start", "gateway")
+        + '<eventBasedGateway id="gateway" eventGatewayType="Exclusive"/>'
+        + flow("gateway", "catch")
+        + '<intermediateCatchEvent id="catch">'
+        '<signalEventDefinition signalRef="sig"/></intermediateCatchEvent>'
+        + flow("catch", "after")
+        + script("after", "caught = True")
+        + flow("after", "end")
+        + '<endEvent id="end"/>'
+    )
+    definition = deploy(
+        session,
+        actor,
+        model(body, "long_signal", signal=signal_name),
+    )
+    instance = start(session, actor, definition)
+    subscription = session.scalar(
+        select(SignalSubscriptionModel).where(
+            SignalSubscriptionModel.m8f_tenant_id == actor[0],
+            SignalSubscriptionModel.process_instance_id == instance.id,
+            SignalSubscriptionModel.signal_name == signal_name,
+        )
+    )
+    assert subscription is not None
+    assert subscription.subscription_key.startswith("sha256:")
+    assert len(subscription.subscription_key) <= 255
+    workflow = _restore_workflow(instance.workflow_state_json)
+    gateway = workflow.get_tasks(spec_name="gateway")[0]
+    assert subscription.subscription_key.endswith(
+        gateway.internal_data["m8f_signal_activation"]
+    )
+
+    api.execute_command(
+        session,
+        api.PublishSignalCommand(
+            tenant_id=actor[0],
+            signal_name=signal_name,
+            user_id=actor[1],
+            occurrence_id="long-signal-name",
+            published_at=NOW,
+        ),
+    )
+    receipts = run(session, actor[0])
+    assert [receipt.status for receipt in receipts] == ["delivered"]
+    assert instance.status == "complete"
+
+
+def test_long_signal_name_bpmn_throw_reaches_local_event_gateway(session, actor):
+    signal_name = "Notice" + ("x" * 194)
+    body = (
+        '<startEvent id="start"/>'
+        + flow("start", "fork")
+        + '<parallelGateway id="fork"/>'
+        + flow("fork", "throw")
+        + '<intermediateThrowEvent id="throw">'
+        '<signalEventDefinition signalRef="sig"/></intermediateThrowEvent>'
+        + flow("throw", "throw_end")
+        + '<endEvent id="throw_end"/>'
+        + flow("fork", "gateway")
+        + '<eventBasedGateway id="gateway" eventGatewayType="Exclusive"/>'
+        + flow("gateway", "catch")
+        + '<intermediateCatchEvent id="catch">'
+        '<signalEventDefinition signalRef="sig"/></intermediateCatchEvent>'
+        + flow("catch", "after")
+        + script("after", "caught = True")
+        + flow("after", "end")
+        + '<endEvent id="end"/>'
+    )
+    instance = start(
+        session,
+        actor,
+        deploy(session, actor, model(body, "long_local_throw", signal_name)),
+    )
+    assert instance.status == "complete"
+    publication = session.scalars(
+        select(SignalPublicationModel).where(
+            SignalPublicationModel.m8f_tenant_id == actor[0],
+            SignalPublicationModel.source_process_instance_id == instance.id,
+        )
+    ).one()
+    receipts = api.list_signal_deliveries(
+        session, tenant_id=actor[0], occurrence_id=publication.occurrence_id
+    )
+    assert [receipt.status for receipt in receipts] == ["delivered"]
+
+
+def test_long_signal_name_repeatable_boundary_receives_each_occurrence(session, actor):
+    signal_name = "Notice" + ("x" * 194)
+    instance = start(
+        session,
+        actor,
+        deploy(
+            session,
+            actor,
+            handler_model("boundary", False, signal=signal_name),
+        ),
+    )
+    subscription = session.scalar(
+        select(SignalSubscriptionModel).where(
+            SignalSubscriptionModel.m8f_tenant_id == actor[0],
+            SignalSubscriptionModel.process_instance_id == instance.id,
+            SignalSubscriptionModel.signal_name == signal_name,
+        )
+    )
+    assert subscription is not None
+    assert subscription.repeatable is True
+    assert subscription.subscription_key.startswith("sha256:")
+    assert len(subscription.subscription_key) <= 255
+
+    for occurrence in ("long-one", "long-two"):
+        publish(session, actor, occurrence, signal_name=signal_name)
+        receipts = run(session, actor[0])
+        assert [receipt.status for receipt in receipts] == ["delivered"]
+        assert pending_names(session, actor).count("side") == (
+            1 if occurrence == "long-one" else 2
+        )
+        session.commit()
+        session.expire_all()
+    assert instance.status == "user_input_required"
+
+
+def test_legacy_subscription_key_without_signal_segment_still_delivers(session, actor):
+    from SpiffWorkflow.util.task import TaskState
+
+    instance = start(session, actor, deploy(session, actor, waiter()))
+    instance_id = instance.id
+    subscription = session.scalar(
+        select(SignalSubscriptionModel).where(
+            SignalSubscriptionModel.m8f_tenant_id == actor[0],
+            SignalSubscriptionModel.process_instance_id == instance_id,
+            SignalSubscriptionModel.kind == "catch",
+        )
+    )
+    assert subscription is not None
+    workflow = _restore_workflow(instance.workflow_state_json)
+    catch = workflow.get_tasks(spec_name="catch", state=TaskState.WAITING)[0]
+    activation = catch.internal_data["m8f_signal_activation"]
+
+    # This was the key format persisted by core 1.0.0 before signal names were
+    # added to per-instance catcher subscription keys.
+    subscription.subscription_key = f"pi:{instance_id}:task:{catch.id}:{activation}"
+    session.commit()
+    session.expire_all()
+
+    # Reload both records after committing to model publication after an
+    # upgrade, before the instance has been persisted again by the new core.
+    instance = session.get(ProcessInstanceModel, instance_id)
+    subscription = session.scalar(
+        select(SignalSubscriptionModel).where(
+            SignalSubscriptionModel.m8f_tenant_id == actor[0],
+            SignalSubscriptionModel.process_instance_id == instance_id,
+            SignalSubscriptionModel.kind == "catch",
+        )
+    )
+    assert instance is not None
+    assert subscription is not None
+    assert ":signal:" not in subscription.subscription_key
+
+    publish(session, actor)
+    receipts = run(session, actor[0])
+    assert [receipt.status for receipt in receipts] == ["delivered"]
+    assert instance.status == "complete"
 
 
 def test_recipient_script_failure_consumed_once_and_does_not_block_others(

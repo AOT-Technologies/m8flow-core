@@ -140,4 +140,7 @@ tasks in lanes if they should be assigned to people. Re-run `ensure_v1_role` for
 existing manager/admin roles to provision the new publication grant.
 
 Run `uv run python examples/signal_broadcast.py` to step through the SQLite
-example. Add `--non-interactive` for scripted runs.
+broadcast and Signal Start example. Add `--non-interactive` for scripted runs.
+Run `uv run python examples/signal_event_gateway.py` to see local and queued
+delivery to event-based gateway catches, including tenant isolation and a
+repeat poll that does not redeliver.
