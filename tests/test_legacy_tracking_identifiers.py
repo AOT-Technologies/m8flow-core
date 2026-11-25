@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Existing identifiers remain data, including inside serialized workflow state."""
 
-from pathlib import Path
-
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -34,9 +32,18 @@ def test_existing_identifiers_survive_session_reload_and_task_completion(
     ensure_v1_role(
         session, tenant_id=tenant_id, role_name=ROLE_ADMIN, user_ids=[user_id]
     )
-    xml = (
-        Path(__file__).parent / "fixtures" / "legacy_tracking_identifiers.bpmn"
-    ).read_text(encoding="utf-8")
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="urn:legacy-workflows">
+  <bpmn:process id="{legacy}" isExecutable="true">
+    <bpmn:startEvent id="start" />
+    <bpmn:userTask id="review" />
+    <bpmn:endEvent id="end" />
+    <bpmn:sequenceFlow id="to_review" sourceRef="start" targetRef="review" />
+    <bpmn:sequenceFlow id="to_end" sourceRef="review" targetRef="end" />
+  </bpmn:process>
+</bpmn:definitions>
+"""
     definition = api.execute_command(
         session,
         api.ImportBpmnProcessDefinitionCommand(
