@@ -124,6 +124,12 @@ Explicitly not covered yet:
 
 See `docs/reference/limitations.md` before assuming a capability exists.
 
+## Naming and Tracking Identifiers
+
+- Never use a ticket code in migration revision IDs or filenames, ownership table or
+  constraint names, or source comments. Use neutral names based on the schema change
+  or purpose instead; ticket codes should never be used as permanent identifiers.
+
 ## Working Conventions
 
 - Python version: 3.12
