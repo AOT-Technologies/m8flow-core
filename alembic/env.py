@@ -161,14 +161,19 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
         actual_unique.add(
             frozenset(inspector.get_pk_constraint(name)["constrained_columns"])
         )
-        actual_unique.update(
-            frozenset(index["column_names"])
+        # Partial indexes cannot satisfy full-table uniqueness or lookup needs.
+        full_indexes = [
+            index
             for index in inspector.get_indexes(name)
-            if index["unique"]
-            and not any(
+            if not any(
                 key.endswith("_where") and value is not None
                 for key, value in (index.get("dialect_options") or {}).items()
             )
+        ]
+        actual_unique.update(
+            frozenset(index["column_names"])
+            for index in full_indexes
+            if index["unique"]
         )
         if any(
             frozenset(key.columns.keys()) not in actual_unique
@@ -176,6 +181,14 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
             if isinstance(key, sa.UniqueConstraint)
         ):
             problems.append("missing unique constraint")
+        actual_lookups = {
+            tuple(index["column_names"])
+            for index in full_indexes
+            if not index["unique"]
+        }
+        for index in sorted(expected.indexes, key=lambda item: str(item.name)):
+            if not index.unique and tuple(index.columns.keys()) not in actual_lookups:
+                problems.append(f"missing or incompatible index {index.name}")
         actual_checks = {
             item["sqltext"] for item in inspector.get_check_constraints(name)
         }

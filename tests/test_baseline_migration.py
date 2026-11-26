@@ -1011,6 +1011,135 @@ def test_historical_schema_is_validated_before_translation(
         engine.dispose()
 
 
+_LEGACY_LOOKUP_INDEXES = [
+    (
+        HEAD_REVISION,
+        _LEGACY_MESSAGE_REVISION,
+        "message_subscription",
+        "m8f_msg_sub_match",
+        ("m8f_tenant_id", "message_name", "correlation_digest"),
+    ),
+    (
+        HEAD_REVISION,
+        _LEGACY_MESSAGE_REVISION,
+        "message_subscription",
+        "m8f_msg_sub_definition",
+        ("m8f_tenant_id", "message_name", "process_definition_id"),
+    ),
+    *[
+        (
+            COMPENSATION_REVISION,
+            _LEGACY_COMPENSATION_REVISION,
+            table,
+            f"ix_{table}_{column}",
+            (column,),
+        )
+        for table in ("compensation_scope", "compensation_run", "compensation_record")
+        for column in ("m8f_tenant_id", "process_instance_id")
+    ],
+]
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+@pytest.mark.parametrize(
+    "revision,legacy,table,index_name,columns,change",
+    [(*index, "missing") for index in _LEGACY_LOOKUP_INDEXES]
+    + [
+        (*index, change)
+        for index in _LEGACY_LOOKUP_INDEXES[:2]
+        for change in ("columns", "order", "partial", "unique", "renamed")
+    ],
+)
+def test_historical_lookup_indexes_are_validated_before_translation(
+    migration_database: str,
+    revision: str,
+    legacy: str,
+    table: str,
+    index_name: str,
+    columns: tuple[str, ...],
+    change: str,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, revision)
+    engine = sa.create_engine(migration_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                M8flowTenantModel.__table__.insert().values(
+                    id="retained", name="Retained", slug="retained"
+                )
+            )
+            connection.execute(
+                sa.text("UPDATE alembic_version SET version_num = :legacy"),
+                {"legacy": legacy},
+            )
+            with Operations.context(
+                MigrationContext.configure(connection)
+            ) as operations:
+                operations.drop_index(index_name, table_name=table)
+                if change != "missing":
+                    operations.create_index(
+                        f"{index_name}_renamed" if change == "renamed" else index_name,
+                        table,
+                        ("task_guid",)
+                        if change == "columns"
+                        else (
+                            tuple(reversed(columns)) if change == "order" else columns
+                        ),
+                        unique=change == "unique",
+                        **(
+                            {
+                                "sqlite_where": sa.text("message_name = 'restricted'"),
+                                "postgresql_where": sa.text(
+                                    "message_name = 'restricted'"
+                                ),
+                            }
+                            if change == "partial"
+                            else {}
+                        ),
+                    )
+        if change != "renamed":
+            with pytest.raises(
+                RuntimeError,
+                match=f"Incompatible historical schema: {table}: .*index {index_name}",
+            ):
+                command.upgrade(config, "head")
+            assert _revision_stamps(migration_database) == {legacy}
+            with engine.begin() as connection:
+                assert (
+                    connection.scalar(
+                        sa.select(M8flowTenantModel.__table__.c.slug).where(
+                            M8flowTenantModel.__table__.c.id == "retained"
+                        )
+                    )
+                    == "retained"
+                )
+                with Operations.context(
+                    MigrationContext.configure(connection)
+                ) as operations:
+                    if change != "missing":
+                        operations.drop_index(index_name, table_name=table)
+                    operations.create_index(index_name, table, columns)
+        command.upgrade(config, "head")
+        command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {HEAD_REVISION}
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(M8flowTenantModel.__table__.c.slug).where(
+                        M8flowTenantModel.__table__.c.id == "retained"
+                    )
+                )
+                == "retained"
+            )
+    finally:
+        with engine.begin() as connection:
+            metadata = sa.MetaData()
+            metadata.reflect(connection)
+            metadata.drop_all(connection)
+        engine.dispose()
+
+
 @pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
 def test_distinct_historical_names_cannot_map_to_the_same_revision(
     migration_database: str,

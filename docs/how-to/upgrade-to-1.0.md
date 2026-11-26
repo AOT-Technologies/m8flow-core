@@ -130,9 +130,13 @@ The second command should report `message_correlation` as the head.
 The canonical revision names are `message_correlation` and
 `compensation_journal`. Updated migration tooling automatically translates
 existing stamps with the historical numeric namespace and a recognized
-schema purpose on `alembic upgrade head`. It validates the installed columns,
-primary keys, and tenant relationships before translating the marker,
-without replaying table creation or changing rows.
+schema purpose on `alembic upgrade head`. It validates column types and
+nullability, primary keys, check and unique constraints, foreign-key behavior,
+and required lookup indexes before translating the marker, without replaying
+table creation or changing rows. Lookup indexes must have the expected column
+order, be non-unique, and cover the whole table; equivalent index names are
+accepted. Missing or incompatible indexes leave the original stamp and data
+unchanged. Restore them through your application's migrations before retrying.
 This also applies when no schema migrations remain. Use neutral revision
 names for explicit upgrade/downgrade targets and offline SQL ranges.
 
