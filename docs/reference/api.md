@@ -177,7 +177,7 @@ It takes the following fields:
 | `properties_json` | `dict[str, Any] \| None` | No | Arbitrary metadata. The keys `lane_owners` and `initiator_lanes` control task assignment (see below) |
 | `bpmn_version_control_type` | `str \| None` | No | For example, `"git"` |
 | `bpmn_version_control_identifier` | `str \| None` | No | For example, a branch or commit |
-| `process_xml_digest` | `str \| None` | No | SHA-256 digest of the BPMN source; computed if omitted |
+| `process_xml_digest` | `str \| None` | No | Caller-owned deployment identity; defaults to SHA-256 of the BPMN source |
 | `created_at` | `datetime \| None` | No | |
 | `updated_at` | `datetime \| None` | No | |
 
@@ -197,12 +197,21 @@ submitted XML. `collaboration_metadata` is a dictionary with:
   Routable flows also have `routed_message_ref` and a `target_kind` of
   `start` or `catch`. Descriptive flows have null routing fields.
 
-Each version is identified by the tenant and the SHA-256 of its BPMN source.
-An identical import for the same model reuses that version and its timer
-schedule. A supplied digest must match the source. Changing the BPMN source
-creates a new version. An existing collaboration version rejects conflicting
-model identifiers and DMN source. Single-process definitions return
-`None` for `collaboration_metadata`.
+Each collaboration deployment is identified by its tenant and
+`process_xml_digest`. When the digest is omitted, it defaults to the SHA-256
+of the submitted BPMN source. A host may supply a different deployment identity
+to keep separate models or releases independent even when their BPMN is
+identical, including releases that change only DMN or forms. Supply a new
+identity for each such deployment; the library does not verify a caller-owned
+identity against the source hash or rewrite the source XML.
+
+An identical import for the same model and deployment identity reuses that
+definition and its timer schedule. Reusing an identity with different BPMN,
+conflicting model ownership, or conflicting supplied DMN raises
+`ValidationError`. Omitting DMN on reimport retains the stored DMN. Changing
+the source requires a new identity (computed automatically when no digest is
+supplied). Single-process definitions return `None` for
+`collaboration_metadata`.
 
 Two `properties_json` keys decide who can work on the definition's human
 tasks:

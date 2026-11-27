@@ -13,7 +13,8 @@ fields, return types, and the error classes each operation may raise.
 
 Import BPMN collaborations with ``ImportBpmnProcessDefinitionCommand``,
 select a participant when starting an instance, and poll modeled messages
-with ``run_due_scheduler_jobs``.
+with ``run_due_scheduler_jobs``. An explicit ``process_xml_digest`` identifies
+an immutable collaboration deployment; omitting it uses the source SHA-256.
 """
 
 from __future__ import annotations

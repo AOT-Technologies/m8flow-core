@@ -487,3 +487,16 @@ def test_work_item_user_added_by_column_is_stable() -> None:
 
     assert column.nullable is True
     assert column.type.length == 20
+
+
+def test_definition_identity_remains_tenant_scoped_without_source_uniqueness() -> None:
+    from sqlalchemy import UniqueConstraint
+
+    table = Base.metadata.tables["bpmn_process_definition"]
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert ("m8f_tenant_id", "process_xml_digest") in unique_columns
+    assert not any("source_bpmn_xml" in columns for columns in unique_columns)

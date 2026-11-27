@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from m8flow_core import api
 
 # Snapshot of the public surface. Any change here is a deliberate
@@ -228,3 +230,52 @@ def test_error_hierarchy_preserves_builtin_compatibility() -> None:
     assert issubclass(api.NotFoundError, LookupError)
     assert issubclass(api.ServiceTaskExecutionError, api.BpmnCoreError)
     assert issubclass(api.ServiceTaskExecutionError, RuntimeError)
+
+
+@pytest.mark.parametrize(
+    "fixture", ["invoice_approval_poc.bpmn", "order-fulfilment-collaboration.bpmn"]
+)
+def test_public_import_supports_distinct_deployment_identities(session, fixture):
+    from hashlib import sha256
+    from pathlib import Path
+
+    from m8flow_core.models.tenant import M8flowTenantModel
+    from m8flow_core.models.user import UserModel
+    from m8flow_core.services.authorization import ROLE_ADMIN, ensure_v1_role
+
+    tenant_id = "deployment-contract"
+    user = UserModel(
+        username="importer",
+        service="test",
+        service_id="importer",
+        realm_identifier=tenant_id,
+    )
+    session.add_all(
+        [M8flowTenantModel(id=tenant_id, slug=tenant_id, name=tenant_id), user]
+    )
+    session.flush()
+    ensure_v1_role(
+        session, tenant_id=tenant_id, role_name=ROLE_ADMIN, user_ids=[user.id]
+    )
+    source = (Path(__file__).parent / "fixtures" / fixture).read_bytes()
+
+    def import_definition(digest=None):
+        return api.execute_command(
+            session,
+            api.ImportBpmnProcessDefinitionCommand(
+                tenant_id,
+                "model",
+                user.id,
+                source,
+                process_xml_digest=digest,
+            ),
+        )
+
+    default = import_definition()
+    released = import_definition("host-release")
+    assert default.process_xml_digest == sha256(source).hexdigest()
+    assert released.process_xml_digest == "host-release"
+    assert default.id != released.id
+    assert default.source_bpmn_xml == released.source_bpmn_xml == source.decode()
+    assert import_definition().id == default.id
+    assert import_definition("host-release").id == released.id

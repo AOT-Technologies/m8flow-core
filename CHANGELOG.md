@@ -18,6 +18,11 @@ and what each version part means.
 
 ### Fixed
 
+- Collaboration imports now accept caller-owned `process_xml_digest` values,
+  allowing hosts to deploy independent models and releases with identical BPMN
+  source. Imports still default to the source SHA-256 and reject conflicting
+  source or model ownership when a deployment identity is reused.
+
 - Signal subscriptions now include signal definitions nested in event-based
   gateways, allowing local and queued publications to reach their catch events.
   Long signal names keep hashed subscription keys within the database column

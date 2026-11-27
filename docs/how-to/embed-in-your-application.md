@@ -24,6 +24,20 @@ You need the following:
 - Tenants and users in that database. The library checks them but doesn't
   create them.
 
+## Identify model releases
+
+`ImportBpmnProcessDefinitionCommand.process_xml_digest` is optional. By default,
+the library uses SHA-256 of the submitted BPMN source as the tenant-scoped
+definition identity. Hosts with independent model releases can supply their
+own stable digest derived from the model generation, release number, and BPMN
+filename. Use a distinct digest for each release, even when only a form or DMN
+changes, and reuse that digest when retrying the same deployment.
+
+This also applies to collaborations. Their source XML is retained unchanged,
+and an existing deployment rejects conflicting BPMN, model ownership, or
+supplied DMN. Caller-owned digests do not weaken tenant membership or command
+authorization checks. No database migration is needed for this option.
+
 ## Choose a session or a connection
 
 `execute_command` and `execute_query` accept either a SQLAlchemy `Session` or
