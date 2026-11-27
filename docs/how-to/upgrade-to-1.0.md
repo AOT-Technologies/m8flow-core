@@ -137,6 +137,13 @@ table creation or changing rows. Lookup indexes must have the expected column
 order, be non-unique, and cover the whole table; equivalent index names are
 accepted. Missing or incompatible indexes leave the original stamp and data
 unchanged. Restore them through your application's migrations before retrying.
+The two message tables and three compensation tables must have exactly the
+expected columns and constraint definitions: extra columns (even nullable or
+defaulted ones), CHECK expressions, foreign keys, and unrecognized uniqueness
+constraints or unique indexes are rejected. Equivalent constraint names and
+uniqueness over the primary key are accepted, as are extra non-unique indexes.
+Remove incompatible additions through your application's migrations before
+retrying; validation never removes them or rewrites application data.
 This also applies when no schema migrations remain. Use neutral revision
 names for explicit upgrade/downgrade targets and offline SQL ranges.
 

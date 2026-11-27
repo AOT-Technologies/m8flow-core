@@ -1140,6 +1140,303 @@ def test_historical_lookup_indexes_are_validated_before_translation(
         engine.dispose()
 
 
+_LEGACY_TABLES = [
+    (HEAD_REVISION, _LEGACY_MESSAGE_REVISION, "message_subscription"),
+    (HEAD_REVISION, _LEGACY_MESSAGE_REVISION, "message_delivery_receipt"),
+    *[
+        (COMPENSATION_REVISION, _LEGACY_COMPENSATION_REVISION, table)
+        for table in ("compensation_scope", "compensation_run", "compensation_record")
+    ],
+]
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+@pytest.mark.parametrize(
+    "revision,legacy,table,addition",
+    [(*table, "required-column") for table in _LEGACY_TABLES]
+    + [
+        (*table, addition)
+        for table in (_LEGACY_TABLES[0], _LEGACY_TABLES[2])
+        for addition in (
+            "nullable-column",
+            "defaulted-column",
+            "check",
+            "unique",
+            "unique-index",
+            "partial-unique-index",
+            "expression-unique-index",
+            "foreign-key",
+            "foreign-schema",
+        )
+    ],
+)
+def test_historical_schema_rejects_unexpected_additions(
+    migration_database: str,
+    revision: str,
+    legacy: str,
+    table: str,
+    addition: str,
+) -> None:
+    if addition == "foreign-schema" and not migration_database.startswith("postgresql"):
+        pytest.skip("SQLite does not support cross-schema foreign keys")
+    config = _alembic_config()
+    command.upgrade(config, revision)
+    engine = sa.create_engine(migration_database)
+    receipt_table = Base.metadata.tables["message_delivery_receipt"]
+    receipt = {
+        "m8f_tenant_id": "retained",
+        "delivery_id": "retained",
+        "request_digest": "a" * 64,
+        "delivered_at": datetime.now(UTC),
+    }
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                M8flowTenantModel.__table__.insert().values(
+                    id="retained", name="Retained", slug="retained"
+                )
+            )
+            connection.execute(
+                sa.text("UPDATE alembic_version SET version_num = :legacy"),
+                {"legacy": legacy},
+            )
+            if table == "message_delivery_receipt":
+                connection.execute(receipt_table.insert().values(**receipt))
+            if addition == "foreign-schema":
+                connection.execute(sa.schema.CreateSchema("legacy_restrictive"))
+                sa.Table(
+                    "m8flow_tenant",
+                    sa.MetaData(),
+                    sa.Column("id", sa.String(255), primary_key=True),
+                    schema="legacy_restrictive",
+                ).create(connection)
+            with Operations.context(
+                MigrationContext.configure(connection)
+            ) as operations:
+                if addition.endswith("index"):
+                    operations.create_index(
+                        "legacy_extra",
+                        table,
+                        [sa.text("lower(m8f_tenant_id)")]
+                        if addition == "expression-unique-index"
+                        else ["m8f_tenant_id"],
+                        unique=True,
+                        **(
+                            {
+                                "sqlite_where": sa.text("m8f_tenant_id = 'restricted'"),
+                                "postgresql_where": sa.text(
+                                    "m8f_tenant_id = 'restricted'"
+                                ),
+                            }
+                            if addition == "partial-unique-index"
+                            else {}
+                        ),
+                    )
+                else:
+                    with operations.batch_alter_table(table) as batch:
+                        if addition.endswith("column"):
+                            batch.add_column(
+                                sa.Column(
+                                    "legacy_extra",
+                                    sa.String(255),
+                                    nullable=addition == "nullable-column",
+                                    server_default="legacy"
+                                    if addition != "nullable-column"
+                                    else None,
+                                )
+                            )
+                        elif addition == "check":
+                            batch.create_check_constraint(
+                                "legacy_extra", "m8f_tenant_id = 'restricted'"
+                            )
+                        elif addition == "unique":
+                            batch.create_unique_constraint(
+                                "legacy_extra", ["m8f_tenant_id"]
+                            )
+                        else:
+                            batch.create_foreign_key(
+                                "legacy_extra",
+                                "m8flow_tenant",
+                                ["m8f_tenant_id"],
+                                ["id"] if addition == "foreign-schema" else ["slug"],
+                                referent_schema="legacy_restrictive"
+                                if addition == "foreign-schema"
+                                else None,
+                            )
+                    if addition == "required-column":
+                        # Backfill existing rows, then remove the default: normal
+                        # application INSERTs cannot supply this unexpected column.
+                        with operations.batch_alter_table(table) as batch:
+                            batch.alter_column("legacy_extra", server_default=None)
+                        assert (
+                            next(
+                                column
+                                for column in sa.inspect(connection).get_columns(table)
+                                if column["name"] == "legacy_extra"
+                            )["default"]
+                            is None
+                        )
+        problem = (
+            "unexpected column legacy_extra"
+            if addition.endswith("column")
+            else "unexpected check constraint"
+            if addition == "check"
+            else "unexpected foreign key"
+            if addition.startswith("foreign")
+            else "unexpected unique"
+        )
+        with pytest.raises(
+            RuntimeError, match=f"Incompatible historical schema: {table}: .*{problem}"
+        ):
+            command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {legacy}
+        with engine.begin() as connection:
+            assert (
+                connection.scalar(sa.select(M8flowTenantModel.__table__.c.slug))
+                == "retained"
+            )
+            if table == "message_delivery_receipt":
+                assert (
+                    connection.scalar(sa.select(receipt_table.c.request_digest))
+                    == receipt["request_digest"]
+                )
+            with Operations.context(
+                MigrationContext.configure(connection)
+            ) as operations:
+                if addition.endswith("index"):
+                    operations.drop_index("legacy_extra", table_name=table)
+                else:
+                    with operations.batch_alter_table(table) as batch:
+                        if addition.endswith("column"):
+                            batch.drop_column("legacy_extra")
+                        else:
+                            batch.drop_constraint(
+                                "legacy_extra",
+                                type_="foreignkey"
+                                if addition.startswith("foreign")
+                                else addition,
+                            )
+            if table == "message_delivery_receipt":
+                connection.execute(
+                    receipt_table.insert().values(**{**receipt, "delivery_id": "new"})
+                )
+        command.upgrade(config, "head")
+        command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {HEAD_REVISION}
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(sa.select(M8flowTenantModel.__table__.c.slug))
+                == "retained"
+            )
+    finally:
+        with engine.begin() as connection:
+            metadata = sa.MetaData()
+            metadata.reflect(connection)
+            metadata.drop_all(connection)
+            if addition == "foreign-schema":
+                connection.execute(
+                    sa.schema.DropSchema("legacy_restrictive", cascade=True)
+                )
+        engine.dispose()
+
+
+@pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
+@pytest.mark.parametrize(
+    "revision,legacy,table,addition",
+    [
+        (*table, addition)
+        for table in _LEGACY_TABLES
+        for addition in ("non-unique-index", "primary-key-unique")
+    ]
+    + [
+        (*_LEGACY_TABLES[1], "renamed-check"),
+        (*_LEGACY_TABLES[0], "renamed-foreign-key"),
+        (*_LEGACY_TABLES[2], "renamed-unique"),
+        (*_LEGACY_TABLES[2], "equivalent-unique-index"),
+    ],
+)
+def test_historical_schema_accepts_equivalent_constraints_and_extra_lookups(
+    migration_database: str,
+    revision: str,
+    legacy: str,
+    table: str,
+    addition: str,
+) -> None:
+    config = _alembic_config()
+    command.upgrade(config, revision)
+    engine = sa.create_engine(migration_database)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("UPDATE alembic_version SET version_num = :legacy"),
+                {"legacy": legacy},
+            )
+            with Operations.context(
+                MigrationContext.configure(connection)
+            ) as operations:
+                if addition == "non-unique-index":
+                    operations.create_index("legacy_extra", table, ["m8f_tenant_id"])
+                else:
+                    expected = Base.metadata.tables[table]
+                    with operations.batch_alter_table(table) as batch:
+                        if addition == "primary-key-unique":
+                            batch.create_unique_constraint(
+                                "legacy_extra",
+                                list(expected.primary_key.columns.keys()),
+                            )
+                        elif addition == "renamed-check":
+                            check = next(
+                                item
+                                for item in expected.constraints
+                                if isinstance(item, sa.CheckConstraint)
+                            )
+                            batch.drop_constraint(str(check.name), type_="check")
+                            batch.create_check_constraint(
+                                "legacy_extra", str(check.sqltext)
+                            )
+                        elif addition == "renamed-foreign-key":
+                            key = next(
+                                item
+                                for item in expected.foreign_key_constraints
+                                if item.name == "m8f_msg_sub_instance_fk"
+                            )
+                            batch.drop_constraint(str(key.name), type_="foreignkey")
+                            batch.create_foreign_key(
+                                "legacy_extra",
+                                key.referred_table.name,
+                                list(key.column_keys),
+                                [element.column.name for element in key.elements],
+                                ondelete=key.ondelete,
+                            )
+                        else:
+                            unique = next(
+                                item
+                                for item in expected.constraints
+                                if isinstance(item, sa.UniqueConstraint)
+                                and item.name == "m8f_compensation_scope_occurrence"
+                            )
+                            batch.drop_constraint(str(unique.name), type_="unique")
+                            if addition == "renamed-unique":
+                                batch.create_unique_constraint(
+                                    "legacy_extra", list(unique.columns.keys())
+                                )
+                            else:
+                                batch.create_index(
+                                    "legacy_extra",
+                                    list(unique.columns.keys()),
+                                    unique=True,
+                                )
+        command.upgrade(config, "head")
+        command.upgrade(config, "head")
+        assert _revision_stamps(migration_database) == {HEAD_REVISION}
+    finally:
+        with engine.begin() as connection:
+            metadata = sa.MetaData()
+            metadata.reflect(connection)
+            metadata.drop_all(connection)
+        engine.dispose()
+
+
 @pytest.mark.parametrize("migration_database", _DATABASES, indirect=True)
 def test_distinct_historical_names_cannot_map_to_the_same_revision(
     migration_database: str,

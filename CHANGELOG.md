@@ -21,7 +21,10 @@ and what each version part means.
 - Historical migration stamps are adopted only after validating column types,
   nullability, check and unique constraints, foreign-key behavior, and required
   lookup indexes, including column order and full-table coverage. Invalid schemas
-  retain their original stamps and data.
+  retain their original stamps and data. Unexpected columns and CHECK,
+  foreign-key, or uniqueness restrictions are rejected, including partial and
+  expression unique indexes. Equivalent constraint names and primary-key
+  uniqueness remain valid; additional non-unique indexes are allowed.
 
 - Signal subscriptions now include signal definitions nested in event-based
   gateways, allowing local and queued publications to reach their catch events.

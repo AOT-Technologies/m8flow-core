@@ -86,13 +86,18 @@ def _check_signatures(connection: Connection, table: sa.Table) -> set[str]:
         probe.drop(connection)
 
 
-def _foreign_key_signature(key: dict[str, Any]) -> tuple[Any, ...]:
+def _foreign_key_signature(
+    key: dict[str, Any], default_schema: str | None
+) -> tuple[Any, ...]:
     options = key.get("options") or {}
     return (
         frozenset(
             zip(key["constrained_columns"], key["referred_columns"], strict=True)
         ),
         key["referred_table"],
+        None
+        if key.get("referred_schema") in (None, default_schema)
+        else key["referred_schema"],
         (options.get("ondelete") or "NO ACTION").upper(),
         (options.get("onupdate") or "NO ACTION").upper(),
         bool(options.get("deferrable")),
@@ -114,6 +119,8 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
             raise RuntimeError(f"Incompatible historical schema: missing table {name}")
         problems = []
         columns = {column["name"]: column for column in inspector.get_columns(name)}
+        for column_name in sorted(columns.keys() - expected.columns.keys()):
+            problems.append(f"unexpected column {column_name}")
         for column in expected.columns:
             actual = columns.get(column.name)
             if actual is None:
@@ -130,9 +137,8 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
         ):
             problems.append("incorrect primary key")
         actual_keys = {
-            _foreign_key_signature(key)
+            _foreign_key_signature(key, inspector.default_schema_name)
             for key in inspector.get_foreign_keys(name)
-            if key.get("referred_schema") in (None, inspector.default_schema_name)
         }
         expected_keys = {
             _foreign_key_signature(
@@ -142,18 +148,28 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
                         element.column.name for element in key.elements
                     ],
                     "referred_table": key.referred_table.name,
+                    "referred_schema": key.referred_table.schema,
                     "options": {
                         "ondelete": key.ondelete,
                         "onupdate": key.onupdate,
                         "deferrable": key.deferrable,
                         "initially": key.initially,
                     },
-                }
+                },
+                inspector.default_schema_name,
             )
             for key in expected.foreign_key_constraints
         }
         if not expected_keys <= actual_keys:
             problems.append("missing or incompatible foreign key")
+        if actual_keys - expected_keys:
+            problems.append("unexpected foreign key")
+        expected_unique = {
+            frozenset(key.columns.keys())
+            for key in expected.constraints
+            if isinstance(key, sa.UniqueConstraint)
+        }
+        expected_unique.add(frozenset(expected.primary_key.columns.keys()))
         actual_unique = {
             frozenset(key["column_names"])
             for key in inspector.get_unique_constraints(name)
@@ -162,9 +178,10 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
             frozenset(inspector.get_pk_constraint(name)["constrained_columns"])
         )
         # Partial indexes cannot satisfy full-table uniqueness or lookup needs.
+        indexes = inspector.get_indexes(name)
         full_indexes = [
             index
-            for index in inspector.get_indexes(name)
+            for index in indexes
             if not any(
                 key.endswith("_where") and value is not None
                 for key, value in (index.get("dialect_options") or {}).items()
@@ -175,12 +192,29 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
             for index in full_indexes
             if index["unique"]
         )
-        if any(
-            frozenset(key.columns.keys()) not in actual_unique
-            for key in expected.constraints
-            if isinstance(key, sa.UniqueConstraint)
-        ):
+        if not expected_unique <= actual_unique:
             problems.append("missing unique constraint")
+        if actual_unique - expected_unique:
+            problems.append("unexpected unique constraint or index")
+        for index in indexes:
+            if index["unique"] and (
+                index not in full_indexes or None in index["column_names"]
+            ):
+                problems.append(f"unexpected unique index {index['name']}")
+        if connection.dialect.name == "sqlite":
+            # SQLAlchemy omits SQLite expression indexes from reflection. They
+            # can still reject writes, so inspect their uniqueness separately.
+            quoted_name = connection.dialect.identifier_preparer.quote_identifier(name)
+            reflected_names = {index["name"] for index in indexes}
+            for index_row in connection.exec_driver_sql(
+                f"PRAGMA index_list({quoted_name})"
+            ).mappings():
+                if (
+                    index_row["unique"]
+                    and index_row["origin"] == "c"
+                    and index_row["name"] not in reflected_names
+                ):
+                    problems.append(f"unexpected unique index {index_row['name']}")
         actual_lookups = {
             tuple(index["column_names"])
             for index in full_indexes
@@ -192,8 +226,11 @@ def _require_legacy_schema(connection: Connection, purpose: str) -> None:
         actual_checks = {
             item["sqltext"] for item in inspector.get_check_constraints(name)
         }
-        if not _check_signatures(connection, expected) <= actual_checks:
+        expected_checks = _check_signatures(connection, expected)
+        if not expected_checks <= actual_checks:
             problems.append("missing or incompatible check constraint")
+        if actual_checks - expected_checks:
+            problems.append("unexpected check constraint")
         if problems:
             raise RuntimeError(
                 f"Incompatible historical schema: {name}: {', '.join(problems)}"
