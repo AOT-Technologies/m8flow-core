@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from threading import Event
 
@@ -49,15 +50,24 @@ def _tenant(session: Session, tenant_id: str = "orders") -> int:
 
 
 def _deploy(
-    session: Session, user_id: int, *, tenant_id: str = "orders", source: str = SOURCE
+    session: Session,
+    user_id: int,
+    *,
+    tenant_id: str = "orders",
+    source: str = SOURCE,
+    model_id: str = "order-model",
+    process_xml_digest: str | None = None,
+    source_dmn_xml: str | None = None,
 ) -> BpmnProcessDefinitionModel:
     return api.execute_command(
         session,
         api.ImportBpmnProcessDefinitionCommand(
             tenant_id=tenant_id,
-            bpmn_identifier="order-model",
+            bpmn_identifier=model_id,
             user_id=user_id,
             source_bpmn_xml=source,
+            process_xml_digest=process_xml_digest,
+            source_dmn_xml=source_dmn_xml,
         ),
     )
 
@@ -125,6 +135,7 @@ def test_deploy_preserves_pools_and_flows_and_validates_references(session):
     metadata = definition.collaboration_metadata
     assert definition.bpmn_identifier == metadata["id"] == "OrderCollaboration"
     assert definition.source_bpmn_xml == SOURCE
+    assert definition.process_xml_digest == sha256(SOURCE.encode()).hexdigest()
     assert metadata["executable_process_ids"] == ["Order", "Fulfilment"]
     assert metadata["participants"][2]["process_ref"] is None
     assert metadata["message_flows"][0]["message_ref"] == "NewOrder"
@@ -149,6 +160,66 @@ def test_deploy_preserves_pools_and_flows_and_validates_references(session):
         _start(session, definition, user_id, None)
     assert _instances(session) == []
     assert len(list(session.scalars(select(BpmnProcessDefinitionModel)))) == 1
+
+
+@pytest.mark.parametrize(
+    "digest", ["host-release", sha256(b"model-generation:1:orders.bpmn").hexdigest()]
+)
+def test_explicit_deployment_digest_preserves_source_and_is_idempotent(session, digest):
+    user_id = _tenant(session)
+    definition = _deploy(session, user_id, process_xml_digest=digest)
+    assert definition.process_xml_digest == digest
+    assert definition.source_bpmn_xml == SOURCE
+    assert definition.collaboration_metadata["executable_process_ids"] == [
+        "Order",
+        "Fulfilment",
+    ]
+    assert _deploy(session, user_id, process_xml_digest=digest).id == definition.id
+    default = _deploy(session, user_id)
+    assert default.id != definition.id
+    assert default.process_xml_digest == sha256(SOURCE.encode()).hexdigest()
+    assert len(list(session.scalars(select(BpmnProcessDefinitionModel)))) == 2
+
+
+@pytest.mark.parametrize("conflict", ["bpmn", "model", "dmn", "single-process"])
+def test_explicit_collaboration_digest_rejects_conflicting_imports(session, conflict):
+    user_id = _tenant(session)
+    dmn = (Path(__file__).parent / "fixtures/check_eligibility.dmn").read_text(
+        encoding="utf-8"
+    )
+    definition = _deploy(
+        session, user_id, process_xml_digest="release-one", source_dmn_xml=dmn
+    )
+    definition_id = definition.id
+    kwargs = {
+        "source": SOURCE,
+        "model_id": "order-model",
+        "source_dmn_xml": dmn,
+    }
+    if conflict == "bpmn":
+        kwargs["source"] = SOURCE.replace('name="Order"', 'name="Changed Order"')
+    elif conflict == "model":
+        kwargs["model_id"] = "another-model"
+    elif conflict == "dmn":
+        kwargs["source_dmn_xml"] = dmn + "\n"
+    else:
+        kwargs["source"] = (
+            Path(__file__).parent / "fixtures/invoice_approval_poc.bpmn"
+        ).read_text(encoding="utf-8")
+    with pytest.raises(
+        api.ValidationError, match="conflicts with an existing collaboration version"
+    ):
+        _deploy(session, user_id, process_xml_digest="release-one", **kwargs)
+    session.expire_all()
+    stored = session.get(BpmnProcessDefinitionModel, definition_id)
+    assert stored.source_bpmn_xml == SOURCE
+    assert stored.source_dmn_xml == dmn
+    assert stored.process_model_identifier == "order-model"
+    assert len(list(session.scalars(select(BpmnProcessDefinitionModel)))) == 1
+    assert (
+        _deploy(session, user_id, process_xml_digest="release-one").source_dmn_xml
+        == dmn
+    )
 
 
 @pytest.mark.parametrize(
@@ -294,12 +365,25 @@ def test_ambiguous_catch_defers_and_ignores_suspended_instance(session):
     assert second.status == "suspended"
 
 
-def test_correlation_is_scoped_to_tenant_and_deployment_version(session):
+@pytest.mark.parametrize(
+    "deployment", ["changed-source", "same-source-release", "copied-model"]
+)
+def test_correlation_is_scoped_to_tenant_and_deployment_version(session, deployment):
     user_id = _tenant(session)
     other_user = _tenant(session, "other")
     definition = _deploy(session, user_id)
     next_version = _deploy(
-        session, user_id, source=SOURCE.replace('name="Order"', 'name="Order 2"')
+        session,
+        user_id,
+        source=(
+            SOURCE.replace('name="Order"', 'name="Order 2"')
+            if deployment == "changed-source"
+            else SOURCE
+        ),
+        model_id="copied-order-model"
+        if deployment == "copied-model"
+        else "order-model",
+        process_xml_digest="independent-deployment",
     )
     other_tenant = _deploy(session, other_user, tenant_id="other")
     sender = _start(session, definition, user_id, "Order")
@@ -370,8 +454,10 @@ def test_failed_message_start_can_retry_without_duplicate_instances(
     assert _jobs(session) == []
 
 
+@pytest.mark.parametrize("digest", [None, "timer-release"])
 def test_collaboration_timers_target_participants_and_are_not_rearmed_on_reimport(
     session,
+    digest,
 ):
     user_id = _tenant(session)
     timer = """
@@ -391,7 +477,7 @@ def test_collaboration_timers_target_participants_and_are_not_rearmed_on_reimpor
         '<bpmn:startEvent id="FulfilmentStart"/>'
         + timer.format(prefix="Fulfilment", target="FulfilmentComplete"),
     )
-    definition = _deploy(session, user_id, source=source)
+    definition = _deploy(session, user_id, source=source, process_xml_digest=digest)
     assert {
         job.payload_json["timer_task"]["bpmn_process_id"] for job in _jobs(session)
     } == {
@@ -405,7 +491,10 @@ def test_collaboration_timers_target_participants_and_are_not_rearmed_on_reimpor
         "user_input_required",
         "complete",
     }
-    assert _deploy(session, user_id, source=source).id == definition.id
+    assert (
+        _deploy(session, user_id, source=source, process_xml_digest=digest).id
+        == definition.id
+    )
     assert _jobs(session) == []
 
 

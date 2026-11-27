@@ -96,8 +96,6 @@ def import_bpmn_process_definition(
             "A BPMN file must contain one executable process or a collaboration"
         )
     actual_digest = _hash_text(source_bpmn_xml_text)
-    if collaboration is not None and process_xml_digest not in (None, actual_digest):
-        raise ValidationError("Collaboration digest must match the BPMN source")
 
     from m8flow_core.services.signal_registry import validate_signal_source
 
