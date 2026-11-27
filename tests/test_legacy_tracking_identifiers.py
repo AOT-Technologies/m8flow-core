@@ -67,6 +67,10 @@ def test_existing_identifiers_survive_session_reload_and_task_completion(
     session.expunge_all()
 
     with Session(engine) as restored:
+        user = restored.get(UserModel, user_id)
+        assert user is not None
+        assert user.username == legacy
+        assert user.service_id == legacy
         definition = restored.get(BpmnProcessDefinitionModel, definition_id)
         instance = api.execute_query(
             restored,
