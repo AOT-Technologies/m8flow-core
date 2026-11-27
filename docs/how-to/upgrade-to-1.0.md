@@ -123,7 +123,35 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-The second command should report `m8f_694_message_correlation` as the head.
+The second command should report `message_correlation` as the head.
+
+### Migration revision aliases
+
+The canonical revision names are `message_correlation` and
+`compensation_journal`. Updated migration tooling automatically translates
+existing stamps with the historical numeric namespace and a recognized
+schema purpose on `alembic upgrade head`. It validates column types and
+nullability, primary keys, check and unique constraints, foreign-key behavior,
+and required lookup indexes before translating the marker, without replaying
+table creation or changing rows. Lookup indexes must have the expected column
+order, be non-unique, and cover the whole table; equivalent index names are
+accepted. Missing or incompatible indexes leave the original stamp and data
+unchanged. Restore them through your application's migrations before retrying.
+The two message tables and three compensation tables must have exactly the
+expected columns and constraint definitions: extra columns (even nullable or
+defaulted ones), CHECK expressions, foreign keys, and unrecognized uniqueness
+constraints or unique indexes are rejected. Equivalent constraint names and
+uniqueness over the primary key are accepted, as are extra non-unique indexes.
+Remove incompatible additions through your application's migrations before
+retrying; validation never removes them or rewrites application data.
+This also applies when no schema migrations remain. Use neutral revision
+names for explicit upgrade/downgrade targets and offline SQL ranges.
+
+Update migration tooling before adopting the neutral names: older Alembic
+scripts cannot resolve them. For M8Flow hosts, deploy the coordinated host
+migration update too; its dedicated core marker is normalized separately
+from the core repository's `alembic_version`. No manual stamping or schema
+recreation is required. Existing host provenance constraints remain valid.
 
 ### Upgrade a database that already uses 1.0 migrations
 
@@ -212,10 +240,10 @@ additive migration for each. To upgrade, follow these steps:
    `==1.0.0b3` doesn't pick up the final release on its own.
 2. Back up the database, then run `uv run alembic upgrade head`. It applies
    `l3m4n5o6p7q8`, which adds the signal registry tables, and
-   `m8f_671_compensation`, which adds the compensation journal tables. No
+   `compensation_journal`, which adds the compensation journal tables. No
    stamp is needed.
 3. Run `uv run alembic current` and check that it reports
-   `m8f_671_compensation`.
+   `compensation_journal`.
 4. Re-run `ensure_v1_role` for each tenant's existing `manager` and `admin`
    roles, so they get the new `signal.publish` grant. See
    [Customize authorization](customize-authorization.md).

@@ -8,7 +8,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-revision = "m8f_694_message_correlation"
+revision = "message_correlation"
 down_revision = "m8f_instance_process_tenant"
 branch_labels = None
 depends_on = None

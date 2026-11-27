@@ -5,14 +5,14 @@
 
 """Add durable compensation journal.
 
-Revision ID: m8f_671_compensation
+Revision ID: compensation_journal
 Revises: l3m4n5o6p7q8
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "m8f_671_compensation"
+revision = "compensation_journal"
 down_revision = "l3m4n5o6p7q8"
 branch_labels = None
 depends_on = None

@@ -18,6 +18,14 @@ and what each version part means.
 
 ### Fixed
 
+- Historical migration stamps are adopted only after validating column types,
+  nullability, check and unique constraints, foreign-key behavior, and required
+  lookup indexes, including column order and full-table coverage. Invalid schemas
+  retain their original stamps and data. Unexpected columns and CHECK,
+  foreign-key, or uniqueness restrictions are rejected, including partial and
+  expression unique indexes. Equivalent constraint names and primary-key
+  uniqueness remain valid; additional non-unique indexes are allowed.
+
 - Signal subscriptions now include signal definitions nested in event-based
   gateways, allowing local and queued publications to reach their catch events.
   Long signal names keep hashed subscription keys within the database column
@@ -68,6 +76,11 @@ and what each version part means.
   `nrOfCompletedInstances`, and a `completionCondition` can use them.
 
 ### Changed
+
+- Message and compensation migration revisions now use `message_correlation`
+  and `compensation_journal`. Updated migration tooling translates legacy
+  stamps transactionally without replaying DDL; update host migration tooling
+  alongside core before adopting these names. Schema operations are unchanged.
 
 - CI runs the Python 3.13 and 3.14, macOS, and Windows test matrix on pull
   requests as well as on `main`.
@@ -166,7 +179,7 @@ removed name.
   `get_process_instance_compensations`, `CompensationRecordModel`,
   `CompensationStatus`, and `CompensationExecutionError`. Connectors get a
   stable idempotency key, and failed undo handlers can be retried. Alembic
-  revision `m8f_671_compensation` adds the three compensation journal tables.
+  revision `compensation_journal` adds the three compensation journal tables.
   See [Run compensation handlers](docs/how-to/run-compensation.md).
 - The `work_item` table and `WorkItemModel` for human-task claim state, with
   claims that are safe under concurrency.

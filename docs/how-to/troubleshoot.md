@@ -155,7 +155,7 @@ database created with a 1.0.0 beta has no signal or compensation tables.
 
 **Fix:** back up the database, then run `uv run alembic upgrade head`. Then
 run `uv run alembic current` and check that it reports
-`m8f_671_compensation`. To find differences between the tables and the
+`compensation_journal`. To find differences between the tables and the
 models, run `uv run alembic check`. See
 [Migrate the database](upgrade-to-1.0.md#migrate-the-database).
 
