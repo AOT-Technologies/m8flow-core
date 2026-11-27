@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-"""Multi-instance user tasks through claim and complete (M8F-640).
+"""Multi-instance user tasks through claim and complete.
 
 A loop iteration's form submission belongs to that iteration: it leaves only
 through the loop's output mapping, and never becomes process metadata that
@@ -45,10 +45,10 @@ class _Run:
             id="mi-review", name="Reviews", slug="mi-review"
         )
         self.user = UserModel(
-            username="reviewer640",
-            email="reviewer640@example.com",
+            username="loop-reviewer",
+            email="loop-reviewer@example.com",
             service="http://localhost/realms/mi-review",
-            service_id="reviewer640",
+            service_id="loop-reviewer",
             display_name="Reviewer",
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
@@ -164,8 +164,8 @@ def test_parallel_review_stops_on_its_completion_condition(session: Session) -> 
 
 def test_review_loop_can_be_entered_again(session: Session) -> None:
     # The designer posts every prefilled value back, so each payload echoes its
-    # own input item. Before M8F-640 that item became process metadata and the
-    # second activation failed.
+    # own input item. Before iteration-local runtime support, that item
+    # became process metadata and the second activation failed.
     run = _Run(
         session,
         _START

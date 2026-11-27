@@ -56,7 +56,7 @@ and what each version part means.
 - Alembic revision `m8f_instance_process_tenant` prevents instances from
   referencing a BPMN process owned by another tenant.
 - Task code can raise a BPMN error that an error boundary event catches, for
-  models migrated from Camunda 7 (M8F-675). Scripts call
+  models migrated from Camunda 7. Scripts call
   `raise BpmnError("CODE")`. Connectors raise
   `ServiceTaskExecutionError(..., error_code="CODE")`, and the connector proxy
   client sets `error_code` from the proxy's reply, such as `HttpError404`. The
@@ -96,21 +96,21 @@ and what each version part means.
 
 - A `loopCardinality` multi-instance loop no longer fails with `NameError` when
   its output collection already exists (a SpiffWorkflow 3.2.0 bug).
-- Error and escalation events now go to the nearest matching catcher (M8F-665).
+- Error and escalation events now go to the nearest matching catcher.
   The walk starts in the thrower's scope and moves out one scope at a time. In
   each scope its event subprocesses come first, then boundary events on the
   activity that hosts the scope. Before, SpiffWorkflow broadcast the event to
   every matching catcher in the process, so with matching boundaries at two
   levels the outer one won.
 - Event subprocesses with an error or escalation start event now run only when
-  a matching event is thrown (M8F-665). SpiffWorkflow parsed those start events
+  a matching event is thrown. SpiffWorkflow parsed those start events
   as none starts, so the handler ran every time its scope started and caught
   nothing. The handler starts from the thrower's data. An interrupting one,
   the BPMN default, cancels the rest of its scope, including waiting user
   tasks; one with `isInterrupting="false"` runs beside the main path.
 - An escalation that nothing catches is ignored and the flow continues, and an
   error end event that nothing catches ends its path like a plain end event.
-  Neither puts the instance into an error state (M8F-665).
+  Neither puts the instance into an error state.
 
 ### Security
 

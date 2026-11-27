@@ -657,7 +657,7 @@ def advance_process_instance_workflow(
     completed_task = runtime_task(workflow, UUID(completed_task_guid))
     if in_iteration(completed_task):
         # A loop iteration's submission stays on that iteration. It leaves only
-        # through the loop's output mapping, never as process metadata (M8F-640).
+        # through the loop's output mapping, never as process metadata.
         completed_task.set_data(
             **{
                 str(key): _coerce_metadata_value(str(value))
@@ -1353,7 +1353,7 @@ def _run_all_catching_bpmn_errors(workflow: BpmnWorkflow) -> None:
     """Run the workflow, handing BPMN errors raised by task code to a catcher.
 
     A script's ``BpmnError`` or a connector's coded ``ServiceTaskExecutionError``
-    goes to the nearest waiting error boundary that matches its code (M8F-675).
+    goes to the nearest waiting error boundary that matches its code.
     Any other failure, or one with no catcher, propagates unchanged.
     """
     while True:
@@ -1979,7 +1979,7 @@ def _delete_dropped_predicted_task_models(
     Spiff drops a task's predicted children when it cancels the task, for
     example when an interrupting catcher cancels the rest of a scope. The sync
     only upserts, so a step predicted before the instance was saved kept a
-    FUTURE row after it was dropped (M8F-665). Rows of steps that ran, waited,
+    FUTURE row after it was dropped. Rows of steps that ran, waited,
     failed or were cancelled are history and stay, and so does any row a work
     item or an event refers to. One query finds the rows; nothing is lazy-loaded.
     """

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-"""Error and escalation event subprocesses through the core API (M8F-665).
+"""Error and escalation event subprocesses through the core API.
 
 These run on real persistence: work items of cancelled user tasks leave the
 worklist, and a throw after the instance was saved and restored still reaches

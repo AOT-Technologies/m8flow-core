@@ -22,7 +22,7 @@ FIXTURES = Path(__file__).with_name("fixtures")
 # Each fixture runs a sequential then a parallel script-task loop, and its
 # final script raises unless both output collections hold [10, 20, 30]. A
 # complete instance proves each loop ran once per instance and mapped its
-# outputs (M8F-668).
+# outputs.
 @pytest.mark.parametrize(
     "fixture",
     [
@@ -73,12 +73,13 @@ def test_sequential_and_parallel_multi_instance_complete(
     assert instance.status == api.ProcessInstanceStatus.complete
 
 
-# --- M8F-640: iteration-local data, runtime counters, output order -----------
+# --- iteration-local data, runtime counters, output order -----------
 
 _DEFINITIONS = (
     '<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" '
-    'id="Defs_m8f640" targetNamespace="http://bpmn.io/schema/bpmn">'
-    '<bpmn:process id="Process_m8f640" isExecutable="true">{body}</bpmn:process>'
+    'id="Defs_multi_instance" targetNamespace="http://bpmn.io/schema/bpmn">'
+    '<bpmn:process id="Process_multi_instance" isExecutable="true">'
+    "{body}</bpmn:process>"
     "</bpmn:definitions>"
 )
 # Names that belong to one iteration and must never reach the process scope.
@@ -140,12 +141,12 @@ def _chain(*tasks: str) -> str:
 
 def _run(session: Session, xml: str) -> str:
     """Import and start ``xml`` as an admin; return the instance status."""
-    tenant = M8flowTenantModel(id="mi-640", name="Loops", slug="mi-640")
+    tenant = M8flowTenantModel(id="mi-runtime", name="Loops", slug="mi-runtime")
     user = UserModel(
-        username="looper640",
-        email="looper640@example.com",
-        service="http://localhost/realms/mi-640",
-        service_id="looper640",
+        username="runtime-looper",
+        email="runtime-looper@example.com",
+        service="http://localhost/realms/mi-runtime",
+        service_id="runtime-looper",
         display_name="Looper",
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
@@ -159,7 +160,7 @@ def _run(session: Session, xml: str) -> str:
         session,
         api.ImportBpmnProcessDefinitionCommand(
             tenant_id=tenant.id,
-            bpmn_identifier="m8f640",
+            bpmn_identifier="multi_instance",
             user_id=user.id,
             source_bpmn_xml=xml,
         ),
@@ -322,8 +323,8 @@ def test_nested_loops_keep_their_own_counters(session: Session) -> None:
 
 
 def test_saved_state_keeps_spiff_typenames(session: Session) -> None:
-    # Snapshots written before M8F-640 must keep restoring, and new ones must
-    # stay readable by the same names.
+    # Snapshots written before iteration-local runtime support must restore.
+    # New snapshots must stay readable by the same names.
     from m8flow_core.models.process_instance import ProcessInstanceModel
 
     review = '<bpmn:userTask id="review">' + _loop(False) + "</bpmn:userTask>"
@@ -377,7 +378,7 @@ def test_loop_over_an_iterable_without_a_length(sequential: bool) -> None:
     assert workflow.data["out"] == [["a", 0, 3], ["b", 1, 3], ["c", 2, 3]]
 
 
-def test_snapshot_saved_before_m8f640_resumes_mid_loop() -> None:
+def test_snapshot_saved_by_stock_engine_resumes_mid_loop() -> None:
     """A parallel review saved by the unpatched engine finishes on this one."""
     from SpiffWorkflow.bpmn.serializer.workflow import BpmnWorkflowSerializer
     from SpiffWorkflow.bpmn.workflow import BpmnWorkflow
@@ -404,12 +405,12 @@ def test_snapshot_saved_before_m8f640_resumes_mid_loop() -> None:
     parser = SpiffBpmnParser(validator=None)
     parser.add_bpmn_str(_chain(_PREP, review).encode())
     before = BpmnWorkflow(
-        parser.get_spec("Process_m8f640"),
-        parser.get_subprocess_specs("Process_m8f640"),
+        parser.get_spec("Process_multi_instance"),
+        parser.get_subprocess_specs("Process_multi_instance"),
     )
     before.run_all(halt_on_manual=True)
     finish(before, "c")
-    # What the engine wrote before M8F-640: Spiff's own classes and converters.
+    # Legacy snapshots use Spiff's own classes and converters.
     stock = BpmnWorkflowSerializer(
         registry=BpmnWorkflowSerializer.configure(SPIFF_CONFIG),
         version=_WORKFLOW_STATE_SERIALIZER_VERSION,
